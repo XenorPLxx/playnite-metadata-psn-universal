@@ -1,0 +1,8 @@
+﻿AddonId: UniversalPSNMetadata
+Packages:
+  - Version: 0.1
+    RequiredApiVersion: 6.2.0
+    ReleaseDate: 2022-05-27
+    PackageUrl: https://github.com/XenorPLxx/playnite-metadata-psn-universal/releases/download/0.1/UniversalPSNMetadata_0_1.pext
+    Changelog:
+      - Initial Universal PSN Metadata release, covers only covers
