@@ -1,5 +1,6 @@
 ﻿using AngleSharp.Parser.Html;
 using Playnite.Common;
+using Playnite.SDK;
 using Playnite.SDK.Data;
 using Playnite.SDK.Models;
 using Playnite.SDK.Plugins;
@@ -67,11 +68,9 @@ namespace UniversalPSNMetadata
 
         }
 
-        public class StoreSearchResult
+        public class StoreSearchResult : GenericItemOption
         {
-            public string Title { get; set; }
             public string CoverUrl { get; set; }
-
         }
 
 
@@ -92,7 +91,7 @@ namespace UniversalPSNMetadata
                     var coverUrl = gameElem.QuerySelector(".psw-l-fit-cover").GetAttribute("src").Split('?')[0];
                     results.Add(new StoreSearchResult
                     {
-                        Title = HttpUtility.HtmlDecode(title),
+                        Name = HttpUtility.HtmlDecode(title),
                         CoverUrl = HttpUtility.HtmlDecode(coverUrl)
                     });
 
@@ -107,10 +106,24 @@ namespace UniversalPSNMetadata
                     //    GameId = uint.Parse(gameId)
                     //});
                 }
-                var matchedGame = GetMatchingGame(normalizedSearchTerm, results);
-                if (matchedGame != null)
+                if (options.IsBackgroundDownload) { 
+                    var matchedGame = GetMatchingGame(normalizedSearchTerm, results);
+
+                    if (matchedGame != null)
+                    {
+                        cover = new MetadataFile(matchedGame.CoverUrl);
+                    }
+                } else
                 {
-                    cover = new MetadataFile(matchedGame.CoverUrl);
+                    var selectedGame = plugin.PlayniteApi.Dialogs.ChooseItemWithSearch(null, (a) =>
+                    {          
+                        var name = StringExtensions.NormalizeGameName(a);
+                        return new List<GenericItemOption>(results);
+                    }, options.GameData.Name, string.Empty);
+                    if (selectedGame != null)
+                    {
+                        cover = new MetadataFile(MatchFun(selectedGame.Name, results).CoverUrl);
+                    }
                 }
             }
 
@@ -120,7 +133,7 @@ namespace UniversalPSNMetadata
 
         internal StoreSearchResult MatchFun(string matchName, List<StoreSearchResult> list)
         {
-            var res = list.FirstOrDefault(a => string.Equals(matchName, a.Title, StringComparison.InvariantCultureIgnoreCase));
+            var res = list.FirstOrDefault(a => string.Equals(matchName, a.Name, StringComparison.InvariantCultureIgnoreCase));
             if (res != null)
             {
                 return res;
@@ -137,7 +150,7 @@ namespace UniversalPSNMetadata
         public StoreSearchResult GetMatchingGame(string normalizedSearchTerm, List<StoreSearchResult>  results)
         {
             var normalizedName = normalizedSearchTerm;
-            results.ForEach(a => a.Title = StringExtensions.NormalizeGameName(a.Title));
+            results.ForEach(a => a.Name = StringExtensions.NormalizeGameName(a.Name));
 
             string testName = string.Empty;
             StoreSearchResult matchedGame = null;
@@ -175,7 +188,7 @@ namespace UniversalPSNMetadata
 
             // Try removing apostrophes
             var resCopy = Serialization.GetClone(results);
-            resCopy.ForEach(a => a.Title = a.Title.Replace("'", ""));
+            resCopy.ForEach(a => a.Name = a.Name.Replace("'", ""));
             matchedGame = MatchFun(normalizedName, resCopy);
             if (matchedGame != null)
             {
@@ -187,7 +200,7 @@ namespace UniversalPSNMetadata
             resCopy = Serialization.GetClone(results);
             foreach (var res in resCopy)
             {
-                res.Title = Regex.Replace(res.Title, @"\s*(:|-)\s*", " ");
+                res.Name = Regex.Replace(res.Name, @"\s*(:|-)\s*", " ");
             }
 
             matchedGame = MatchFun(testName, resCopy);
@@ -208,9 +221,9 @@ namespace UniversalPSNMetadata
             // Try without subtitle
             var testResult = results.FirstOrDefault(a =>
             {
-                if (!string.IsNullOrEmpty(a.Title) && a.Title.Contains(":"))
+                if (!string.IsNullOrEmpty(a.Name) && a.Name.Contains(":"))
                 {
-                    return string.Equals(normalizedName, a.Title.Split(':')[0], StringComparison.InvariantCultureIgnoreCase);
+                    return string.Equals(normalizedName, a.Name.Split(':')[0], StringComparison.InvariantCultureIgnoreCase);
                 }
 
                 return false;
