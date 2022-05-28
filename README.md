@@ -6,3 +6,7 @@
 ## About
 
 Current version of Universal PSN Metadata extension for Playnite. Work based on https://github.com/JosefNemec/PlayniteExtensions/.
+
+Plugin in use (single game metadata download and metadata download for multiple selected games):
+
+https://user-images.githubusercontent.com/6712823/170823666-3eea0ea9-24be-4403-a254-64611168cc27.mov
