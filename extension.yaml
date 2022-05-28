@@ -1,7 +1,7 @@
 ﻿Id: UniversalPSNMetadata
 Name: Universal PSN Metadata
 Author: Xenor
-Version: 0.1
+Version: 0.2
 Module: UniversalPSNMetadata.dll
 Type: MetadataProvider
 Icon: icon.png
