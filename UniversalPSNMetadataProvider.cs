@@ -34,7 +34,7 @@ namespace UniversalPSNMetadata
             //MetadataField.CriticScore,
             //MetadataField.Developers,
             //MetadataField.Genres,
-            //MetadataField.Icon,
+            MetadataField.Icon,
             //MetadataField.Links,
             //MetadataField.Publishers,
             //MetadataField.ReleaseDate,
@@ -64,6 +64,17 @@ namespace UniversalPSNMetadata
         return cover;
       }
       return base.GetCoverImage(args);
+    }
+
+    // Covers are square, so might be useful as icons
+    public override MetadataFile GetIcon(GetMetadataFieldArgs args)
+    {
+      GetSearchResults(options.GameData.Name);
+      if (cover != null)
+      {
+        return cover;
+      }
+      return base.GetIcon(args);
     }
 
     public override MetadataFile GetBackgroundImage(GetMetadataFieldArgs args)

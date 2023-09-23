@@ -26,7 +26,7 @@ namespace UniversalPSNMetadata
             //MetadataField.CriticScore,
             //MetadataField.Developers,
             //MetadataField.Genres,
-            //MetadataField.Icon,
+            MetadataField.Icon,
             //MetadataField.Links,
             //MetadataField.Publishers,
             //MetadataField.ReleaseDate,
