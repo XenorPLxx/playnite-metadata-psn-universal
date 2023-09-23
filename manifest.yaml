@@ -1,5 +1,11 @@
 ﻿AddonId: UniversalPSNMetadata
 Packages:
+  - Version: 0.4
+    RequiredApiVersion: 6.9.0
+    ReleaseDate: 2023-09-23
+    PackageUrl: https://github.com/XenorPLxx/playnite-metadata-psn-universal/releases/download/0.4/UniversalPSNMetadata_0_4.pext
+    Changelog:
+      - Added possibility to download icons (uses same image as square covers)
   - Version: 0.3
     RequiredApiVersion: 6.9.0
     ReleaseDate: 2023-06-17
