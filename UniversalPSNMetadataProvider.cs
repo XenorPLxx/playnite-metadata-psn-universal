@@ -152,7 +152,7 @@ namespace UniversalPSNMetadata
         {
           var title = gameElem.QuerySelector(".psw-t-body").InnerHtml;
           var coverUrl = gameElem.QuerySelector(".psw-l-fit-cover").GetAttribute("src").Split('?')[0];
-          var gameUrl = gameElem.QuerySelector(".psw-content-link").GetAttribute("href");
+          var gameUrl = gameElem.QuerySelector(".psw-link").GetAttribute("href");
           results.Add(new StoreSearchResult
           {
             Name = HttpUtility.HtmlDecode(title),
