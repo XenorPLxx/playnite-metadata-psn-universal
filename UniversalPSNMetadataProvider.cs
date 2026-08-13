@@ -183,7 +183,14 @@ namespace UniversalPSNMetadata
         {
           ConfigureStoreRequest(webClient);
           var searchResponse = webClient.DownloadString(BuildSearchUrl(normalizedSearchTerm));
-          results = ParseSearchResults(searchResponse);
+          results = ParseSearchResults(searchResponse, out var searchError);
+          if (!string.IsNullOrEmpty(searchError))
+          {
+            logger.Warn(string.Format(
+              "PlayStation Store search returned an API error for {0}: {1}",
+              normalizedSearchTerm,
+              searchError));
+          }
         }
       }
       catch (Exception ex)
@@ -267,10 +274,17 @@ namespace UniversalPSNMetadata
 
     internal static List<StoreSearchResult> ParseSearchResults(string response)
     {
+      return ParseSearchResults(response, out _);
+    }
+
+    internal static List<StoreSearchResult> ParseSearchResults(string response, out string searchError)
+    {
+      searchError = null;
       using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(response)))
       {
         var serializer = new DataContractJsonSerializer(typeof(PlayStationSearchResponse));
         var searchResponse = serializer.ReadObject(stream) as PlayStationSearchResponse;
+        searchError = GetSearchError(searchResponse);
         var searchResults = searchResponse?.Data?.UniversalSearch?.Results ?? new List<PlayStationSearchItem>();
         var results = new List<StoreSearchResult>();
 
@@ -308,6 +322,23 @@ namespace UniversalPSNMetadata
 
         return results;
       }
+    }
+
+    private static string GetSearchError(PlayStationSearchResponse searchResponse)
+    {
+      if (searchResponse?.Errors?.Count > 0)
+      {
+        return string.Join("; ", searchResponse.Errors
+          .Where(error => !string.IsNullOrEmpty(error.Message))
+          .Select(error => error.Message));
+      }
+
+      if (searchResponse?.Data?.UniversalSearch == null)
+      {
+        return "The response did not contain universal search data. The Store API may have changed.";
+      }
+
+      return null;
     }
 
     private static string GetMediaUrl(List<PlayStationStoreMedia> media, params string[] roles)
@@ -597,6 +628,16 @@ namespace UniversalPSNMetadata
   {
     [DataMember(Name = "data")]
     public PlayStationSearchData Data { get; set; }
+
+    [DataMember(Name = "errors")]
+    public List<PlayStationSearchError> Errors { get; set; }
+  }
+
+  [DataContract]
+  internal class PlayStationSearchError
+  {
+    [DataMember(Name = "message")]
+    public string Message { get; set; }
   }
 
   [DataContract]
