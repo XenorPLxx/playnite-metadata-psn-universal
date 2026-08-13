@@ -31,7 +31,7 @@ namespace UniversalPSNMetadata
     private StorePageMetadata storePageMetadata;
     private const string SearchUrl = "https://web.np.playstation.com/api/graphql/v1//op";
     private const string SearchQueryHash = "4df6284f982e57bec70f23c77e2c219dc792eb19af7fb3d3a81767aa3f1958aa";
-    private const string StoreLocale = "en-us";
+    private const string DefaultStoreLocale = StoreLocaleOptions.DefaultLocale;
     private const string StoreApplicationName = "@sie-ppr-web-store/app";
     private const string StoreApplicationVersion = "0.113.0";
     private const int WeakMatchScore = 600;
@@ -88,6 +88,8 @@ namespace UniversalPSNMetadata
       this.options = options;
       this.plugin = plugin;
     }
+
+    private string StoreLocale => StoreLocaleOptions.GetOrDefault(plugin?.StoreLocale);
 
     public override MetadataFile GetCoverImage(GetMetadataFieldArgs args)
     {
@@ -220,9 +222,9 @@ namespace UniversalPSNMetadata
       {
         using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
         {
-          ConfigureStoreRequest(webClient);
-          var searchResponse = webClient.DownloadString(BuildSearchUrl(normalizedSearchTerm));
-          results = ParseSearchResults(searchResponse, out var searchError);
+          ConfigureStoreRequest(webClient, StoreLocale);
+          var searchResponse = webClient.DownloadString(BuildSearchUrl(normalizedSearchTerm, StoreLocale));
+          results = ParseSearchResults(searchResponse, StoreLocale, out var searchError);
           if (!string.IsNullOrEmpty(searchError))
           {
             logger.Warn(string.Format(
@@ -269,6 +271,7 @@ namespace UniversalPSNMetadata
       {
         using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
         {
+          ConfigureStoreRequest(webClient, StoreLocale);
           gamePageSource = webClient.DownloadString(gameUrl);
           gamePage = new HtmlParser().Parse(gamePageSource);
         }
@@ -406,9 +409,24 @@ namespace UniversalPSNMetadata
 
     private static string BuildSearchUrl(string searchTerm)
     {
+      return BuildSearchUrl(searchTerm, DefaultStoreLocale);
+    }
+
+    internal static string BuildSearchUrl(string searchTerm, string storeLocale)
+    {
+      var locale = StoreLocaleOptions.GetOrDefault(storeLocale).Split('-');
+      var countryCode = locale[locale.Length - 1].ToUpperInvariant();
+      var languageCode = locale[0].ToLowerInvariant();
+      if (languageCode == "zh" && locale.Length > 2 && locale[1].Equals("hant", StringComparison.OrdinalIgnoreCase))
+      {
+        languageCode = "ch";
+      }
+
       var escapedSearchTerm = searchTerm.Replace("\\", "\\\\").Replace("\"", "\\\"");
       var variables = string.Format(
-        "{{\"countryCode\":\"US\",\"languageCode\":\"en\",\"nextCursor\":\"\",\"pageOffset\":0,\"pageSize\":24,\"searchTerm\":\"{0}\"}}",
+        "{{\"countryCode\":\"{0}\",\"languageCode\":\"{1}\",\"nextCursor\":\"\",\"pageOffset\":0,\"pageSize\":24,\"searchTerm\":\"{2}\"}}",
+        countryCode,
+        languageCode,
         escapedSearchTerm);
       var extensions = string.Format("{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{0}\"}}}}", SearchQueryHash);
 
@@ -419,7 +437,7 @@ namespace UniversalPSNMetadata
         Uri.EscapeDataString(extensions));
     }
 
-    private static void ConfigureStoreRequest(WebClient webClient)
+    private static void ConfigureStoreRequest(WebClient webClient, string storeLocale)
     {
       webClient.Headers[HttpRequestHeader.Accept] = "application/json";
       webClient.Headers[HttpRequestHeader.ContentType] = "application/json";
@@ -431,15 +449,33 @@ namespace UniversalPSNMetadata
       webClient.Headers["X-PSN-App-Ver"] = string.Format("{0}/{1}-", StoreApplicationName, StoreApplicationVersion);
       webClient.Headers["X-PSN-Correlation-ID"] = Guid.NewGuid().ToString();
       webClient.Headers["X-PSN-Request-ID"] = Guid.NewGuid().ToString();
-      webClient.Headers["X-PSN-Store-Locale-Override"] = "en-US";
+      webClient.Headers["X-PSN-Store-Locale-Override"] = ToStoreLocaleHeader(storeLocale);
+    }
+
+    private static string ToStoreLocaleHeader(string storeLocale)
+    {
+      var locale = StoreLocaleOptions.GetOrDefault(storeLocale).Split('-');
+      for (var index = 0; index < locale.Length; index++)
+      {
+        locale[index] = index == locale.Length - 1
+          ? locale[index].ToUpperInvariant()
+          : locale[index].ToLowerInvariant();
+      }
+
+      return string.Join("-", locale);
     }
 
     internal static List<StoreSearchResult> ParseSearchResults(string response)
     {
-      return ParseSearchResults(response, out _);
+      return ParseSearchResults(response, DefaultStoreLocale, out _);
     }
 
     internal static List<StoreSearchResult> ParseSearchResults(string response, out string searchError)
+    {
+      return ParseSearchResults(response, DefaultStoreLocale, out searchError);
+    }
+
+    internal static List<StoreSearchResult> ParseSearchResults(string response, string storeLocale, out string searchError)
     {
       searchError = null;
       using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(response)))
@@ -478,7 +514,11 @@ namespace UniversalPSNMetadata
             BackgroundUrl = GetMediaUrl(result.Media, "BACKGROUND", "SIXTEEN_BY_NINE_BANNER"),
             StoreDisplayClassification = result.StoreDisplayClassification,
             Platforms = result.Platforms,
-            GameUrl = string.Format("https://store.playstation.com/{0}/{1}/{2}", StoreLocale, route, result.Id)
+            GameUrl = string.Format(
+              "https://store.playstation.com/{0}/{1}/{2}",
+              StoreLocaleOptions.GetOrDefault(storeLocale),
+              route,
+              result.Id)
           });
         }
 
@@ -539,6 +579,10 @@ namespace UniversalPSNMetadata
         gameUrl = string.Empty;
         return;
       }
+
+      gamePageSource = null;
+      gamePage = null;
+      storePageMetadata = null;
 
       cover = new MetadataFile(selectedGame.CoverUrl);
       if (!string.IsNullOrEmpty(selectedGame.BackgroundUrl))

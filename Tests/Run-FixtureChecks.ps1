@@ -14,7 +14,9 @@ $providerType = $assembly.GetType('UniversalPSNMetadata.UniversalPSNMetadataProv
 $resultType = $assembly.GetType('UniversalPSNMetadata.UniversalPSNMetadataProvider+StoreSearchResult')
 $pageMetadataType = $assembly.GetType('UniversalPSNMetadata.UniversalPSNMetadataProvider+StorePageMetadata')
 $parseMethod = $providerType.GetMethod('ParseSearchResults', [System.Reflection.BindingFlags]'Static, NonPublic', $null, [Type[]]@([string], [string].MakeByRefType()), $null)
+$parseLocalizedMethod = $providerType.GetMethod('ParseSearchResults', [System.Reflection.BindingFlags]'Static, NonPublic', $null, [Type[]]@([string], [string], [string].MakeByRefType()), $null)
 $parsePageMethod = $providerType.GetMethod('ParseStorePageMetadata', [System.Reflection.BindingFlags]'Static, NonPublic', $null, [Type[]]@([string]), $null)
+$buildSearchUrlMethod = $providerType.GetMethod('BuildSearchUrl', [System.Reflection.BindingFlags]'Static, NonPublic', $null, [Type[]]@([string], [string]), $null)
 
 function Read-Fixture($name) {
     return [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "Fixtures\$name"))
@@ -32,12 +34,30 @@ function Assert-Equal($expected, $actual, $message) {
     }
 }
 
+function Assert-Contains($text, $expected, $message) {
+    if (-not $text.Contains($expected)) {
+        throw "$message Expected to find: '$expected'."
+    }
+}
+
 $search = Parse-SearchResponse (Read-Fixture 'search-results-wukong.json')
 Assert-Equal 2 $search.Results.Count 'Unexpected number of parsed search results.'
 Assert-Equal $null $search.Error 'A valid search response reported an error.'
 Assert-Equal 'Black Myth: Wukong' $search.Results[0].Name 'The base game name was not retained.'
 Assert-Equal 'https://example.test/wukong-cover.jpg' $search.Results[0].CoverUrl 'The master cover was not selected.'
 Assert-Equal 'https://example.test/wukong-background.jpg' $search.Results[0].BackgroundUrl 'The background image was not selected.'
+
+$localizedArguments = [object[]]@((Read-Fixture 'search-results-wukong.json'), 'pl-pl', $null)
+$localizedSearch = $parseLocalizedMethod.Invoke($null, $localizedArguments)
+Assert-Equal 'https://store.playstation.com/pl-pl/product/HP6545-PPSA23226_00-GAME000000000000' $localizedSearch[0].GameUrl 'Search results did not use the configured Store locale.'
+
+$polishSearchUrl = [Uri]::UnescapeDataString($buildSearchUrlMethod.Invoke($null, @('wukong', 'pl-pl')))
+Assert-Contains $polishSearchUrl '"countryCode":"PL"' 'Polish Store searches did not use the selected country.'
+Assert-Contains $polishSearchUrl '"languageCode":"pl"' 'Polish Store searches did not use the selected language.'
+
+$traditionalChineseSearchUrl = [Uri]::UnescapeDataString($buildSearchUrlMethod.Invoke($null, @('wukong', 'zh-hant-tw')))
+Assert-Contains $traditionalChineseSearchUrl '"countryCode":"TW"' 'Taiwan Store searches did not use the selected country.'
+Assert-Contains $traditionalChineseSearchUrl '"languageCode":"ch"' 'Traditional Chinese Store searches did not use the Store API language code.'
 
 $searchError = Parse-SearchResponse (Read-Fixture 'search-response-error.json')
 Assert-Equal 0 $searchError.Results.Count 'An API error response returned games.'

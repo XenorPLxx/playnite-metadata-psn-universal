@@ -5,10 +5,16 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              mc:Ignorable="d"
              d:DesignHeight="400" d:DesignWidth="600">
-    <StackPanel>
-        <TextBlock Text="Description for Option1:"/>
-        <TextBox Text="{Binding Settings.Option1}"/>
-        <TextBlock Text="Description for Option2:"/>
-        <CheckBox IsChecked="{Binding Settings.Option2}"/>
+    <StackPanel Margin="12">
+        <TextBlock FontWeight="SemiBold" Text="PlayStation Store region and language" />
+        <TextBlock Margin="0,4,0,8"
+                   Text="Used for Store searches, links, and localized metadata such as descriptions."
+                   TextWrapping="Wrap" />
+        <ComboBox ItemsSource="{Binding StoreLocales}"
+                  DisplayMemberPath="DisplayName"
+                  TextSearch.TextPath="DisplayName"
+                  SelectedValuePath="Locale"
+                  SelectedValue="{Binding Settings.StoreLocale, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                  IsTextSearchEnabled="True" />
     </StackPanel>
 </UserControl>

@@ -15,6 +15,8 @@ namespace UniversalPSNMetadata
 
     private UniversalPSNMetadataSettingsViewModel settings { get; set; }
 
+    internal string StoreLocale => StoreLocaleOptions.GetOrDefault(settings?.Settings?.StoreLocale);
+
     public override Guid Id { get; } = Guid.Parse("d3aab57b-3ece-4211-8dae-40e7470bdc4c");
 
     public override List<MetadataField> SupportedFields { get; } = new List<MetadataField>
