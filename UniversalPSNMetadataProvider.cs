@@ -249,10 +249,13 @@ namespace UniversalPSNMetadata
       {
         var selectedGame = plugin.PlayniteApi.Dialogs.ChooseItemWithSearch(null, (a) =>
         {
-          return new List<GenericItemOption>(results);
+          return GetScoredSearchResults(a, results)
+            .Select(result => (GenericItemOption)result.Result)
+            .ToList();
         }, options.GameData.Name, string.Empty);
 
-        SetSelectedGame(selectedGame == null ? null : MatchFun(selectedGame.Name, results));
+        SetSelectedGame(selectedGame as StoreSearchResult ??
+          (selectedGame == null ? null : MatchFun(selectedGame.Name, results)));
       }
       else
       {
@@ -606,11 +609,8 @@ namespace UniversalPSNMetadata
 
     public StoreSearchResult GetMatchingGame(string gameName, List<StoreSearchResult> results)
     {
-      var scoredResults = results
-        .Select(result => new ScoredSearchResult(result, GetMatchScore(gameName, result)))
+      var scoredResults = GetScoredSearchResults(gameName, results)
         .Where(result => result.Score > 0)
-        .OrderByDescending(result => result.Score)
-        .ThenBy(result => result.Result.Name, StringComparer.InvariantCultureIgnoreCase)
         .ToList();
 
       if (scoredResults.Count == 0)
@@ -642,6 +642,15 @@ namespace UniversalPSNMetadata
       return bestResult.Result;
     }
 
+    private List<ScoredSearchResult> GetScoredSearchResults(string gameName, IEnumerable<StoreSearchResult> results)
+    {
+      return results
+        .Select(result => new ScoredSearchResult(result, GetMatchScore(gameName, result)))
+        .OrderByDescending(result => result.Score)
+        .ThenBy(result => result.Result.Name, StringComparer.InvariantCultureIgnoreCase)
+        .ToList();
+    }
+
     internal int GetMatchScore(string gameName, StoreSearchResult result)
     {
       if (result == null || string.IsNullOrEmpty(result.Name))
@@ -669,24 +678,22 @@ namespace UniversalPSNMetadata
         return 0;
       }
 
-      if (requestedQualifiers.Count > 0 && !requestedQualifiers.All(candidateQualifiers.Contains))
-      {
-        return 0;
-      }
-
-      if (requestedQualifiers.Count > 0 && candidateQualifiers.Except(requestedQualifiers).Any())
-      {
-        return 0;
-      }
-
       var score = exactTitleMatch ? 1000 : 700;
-      if (requestedQualifiers.Count > 0)
+      var missingRequestedQualifiers = requestedQualifiers.Except(candidateQualifiers).Count();
+      var extraCandidateQualifiers = candidateQualifiers.Except(requestedQualifiers).Count();
+      if (requestedQualifiers.Count > 0 && missingRequestedQualifiers == 0)
       {
         score += 200;
       }
-      else if (candidateQualifiers.Count > 0)
+
+      if (missingRequestedQualifiers > 0)
       {
-        score -= 200;
+        score -= 130 * missingRequestedQualifiers;
+      }
+
+      if (extraCandidateQualifiers > 0)
+      {
+        score -= 200 * extraCandidateQualifiers;
       }
 
       score += GetClassificationScore(result.StoreDisplayClassification, requestedQualifiers.Count > 0);
@@ -700,10 +707,21 @@ namespace UniversalPSNMetadata
         .Replace("&", " and ")
         .Replace("'", string.Empty)
         .ToLowerInvariant();
+      normalizedTitle = RemoveTrailingStorePlatformLabels(normalizedTitle);
       normalizedTitle = Regex.Replace(normalizedTitle, @"\b([1-9]|[12]\d|30)\b", ReplaceSmallNumbersForRomans);
       normalizedTitle = Regex.Replace(normalizedTitle, @"[^a-z0-9]+", " ");
       normalizedTitle = Regex.Replace(normalizedTitle, @"\s+", " ").Trim();
       return Regex.Replace(normalizedTitle, @"^the\s+", string.Empty);
+    }
+
+    private static string RemoveTrailingStorePlatformLabels(string title)
+    {
+      const string platformLabel = @"(?:ps\s*[345]|playstation\s*[345]|ps\s*vr(?:\s*2)?|playstation\s*vr(?:\s*2)?)";
+      return Regex.Replace(
+        title,
+        @"(?:\s*(?:and|&|,|/|-)?\s*" + platformLabel + @")+\s*$",
+        string.Empty,
+        RegexOptions.IgnoreCase).Trim();
     }
 
     private static string ReplaceSmallNumbersForRomans(Match match)
@@ -742,14 +760,20 @@ namespace UniversalPSNMetadata
       switch (classification)
       {
         case "FULL_GAME":
-          return 80;
+          return 120;
+        case "GAME_BUNDLE":
+          return -120;
         case "PREMIUM_EDITION":
-          return requestedEdition ? 60 : -80;
+          return requestedEdition ? 40 : -160;
         case "ADD_ON":
+        case "ADD_ON_PACK":
         case "CHARACTER":
+        case "COSTUME":
+        case "GAME_LEVEL":
         case "ITEM":
+        case "VIRTUAL_CURRENCY":
         case "DEMO":
-          return -250;
+          return -500;
         default:
           return 0;
       }

@@ -40,6 +40,29 @@ function Assert-Contains($text, $expected, $message) {
     }
 }
 
+function Assert-Null($actual, $message) {
+    if ($null -ne $actual) {
+        throw "$message Expected: null. Actual: '$($actual.Name)'."
+    }
+}
+
+function New-StoreResult($name, $classification, [string[]]$platforms = @('PS5')) {
+    $result = [Activator]::CreateInstance($resultType)
+    $result.Name = $name
+    $result.StoreDisplayClassification = $classification
+    $result.Platforms = [System.Collections.Generic.List[string]]::new($platforms)
+    return $result
+}
+
+function New-StoreResultList([object[]]$items) {
+    $results = [System.Activator]::CreateInstance([System.Collections.Generic.List``1].MakeGenericType($resultType))
+    foreach ($item in $items) {
+        $results.Add($item)
+    }
+
+    return $results
+}
+
 $search = Parse-SearchResponse (Read-Fixture 'search-results-wukong.json')
 Assert-Equal 2 $search.Results.Count 'Unexpected number of parsed search results.'
 Assert-Equal $null $search.Error 'A valid search response reported an error.'
@@ -71,19 +94,51 @@ $provider = [Activator]::CreateInstance($providerType, @($null, $null))
 $match = $provider.GetMatchingGame('Black Myth: Wukong', $search.Results)
 Assert-Equal 'Black Myth: Wukong' $match.Name 'The base game did not outrank the deluxe edition.'
 
-$remake = [Activator]::CreateInstance($resultType)
-$remake.Name = 'Final Fantasy VII Remake'
-$remake.StoreDisplayClassification = 'FULL_GAME'
-$remake.Platforms = [System.Collections.Generic.List[string]]::new([string[]]@('PS5'))
-$original = [Activator]::CreateInstance($resultType)
-$original.Name = 'Final Fantasy VII'
-$original.StoreDisplayClassification = 'FULL_GAME'
-$original.Platforms = [System.Collections.Generic.List[string]]::new([string[]]@('PS5'))
-$matches = [System.Activator]::CreateInstance([System.Collections.Generic.List``1].MakeGenericType($resultType))
-$matches.Add($original)
-$matches.Add($remake)
+$remake = New-StoreResult 'Final Fantasy VII Remake' 'FULL_GAME'
+$original = New-StoreResult 'Final Fantasy VII' 'FULL_GAME'
+$matches = New-StoreResultList @($original, $remake)
 $match = $provider.GetMatchingGame('Final Fantasy 7 Remake', $matches)
 Assert-Equal 'Final Fantasy VII Remake' $match.Name 'The remake did not outrank the original game.'
+
+$baseGame = New-StoreResult 'Like a Dragon: Pirate Yakuza in Hawaii PS4 & PS5' 'FULL_GAME'
+$demo = New-StoreResult 'Like a Dragon: Pirate Yakuza in Hawaii Demo PS5' 'DEMO'
+$matches = New-StoreResultList @($demo, $baseGame)
+$match = $provider.GetMatchingGame('Like a Dragon: Pirate Yakuza in Hawaii', $matches)
+Assert-Equal $baseGame.Name $match.Name 'Trailing PS4/PS5 labels prevented the full game from matching.'
+
+$tombRaider = New-StoreResult 'Tomb Raider IV-VI Remastered PS4 & PS5' 'FULL_GAME'
+$matches = New-StoreResultList @($tombRaider)
+$match = $provider.GetMatchingGame('Tomb Raider IV-VI Remastered', $matches)
+Assert-Equal $tombRaider.Name $match.Name 'Trailing platform labels prevented a Roman-number title from matching.'
+
+$fullQuidditch = New-StoreResult 'Harry Potter: Quidditch Champions PS4 & PS5' 'FULL_GAME'
+$bundleQuidditch = New-StoreResult 'Harry Potter: Quidditch Champions Deluxe Edition PS4 & PS5' 'GAME_BUNDLE'
+$matches = New-StoreResultList @($bundleQuidditch, $fullQuidditch)
+$match = $provider.GetMatchingGame('Harry Potter: Quidditch Champions', $matches)
+Assert-Equal $fullQuidditch.Name $match.Name 'A game bundle outranked the matching full game.'
+
+$gta = New-StoreResult 'Grand Theft Auto V (PS4™ & PS5™)' 'GAME_BUNDLE'
+$matches = New-StoreResultList @($gta)
+$match = $provider.GetMatchingGame('Grand Theft Auto V Enhanced', $matches)
+Assert-Equal $gta.Name $match.Name 'A missing Store edition suffix discarded an otherwise strong game match.'
+
+$massEffect = New-StoreResult 'Mass Effect™ Legendary Edition' 'FULL_GAME'
+$andromeda = New-StoreResult 'Mass Effect™: Andromeda' 'FULL_GAME'
+$matches = New-StoreResultList @($massEffect, $andromeda)
+$match = $provider.GetMatchingGame('Mass Effect 2 (2010) Edition', $matches)
+Assert-Null $match 'A different Mass Effect title was selected as an automatic match.'
+
+$expectYouToDie = New-StoreResult 'I Expect You To Die' 'FULL_GAME'
+$expectYouToDieTwo = New-StoreResult 'I Expect You To Die 2' 'FULL_GAME'
+$matches = New-StoreResultList @($expectYouToDie, $expectYouToDieTwo)
+$match = $provider.GetMatchingGame('I Expect You To Die 3', $matches)
+Assert-Null $match 'A different I Expect You To Die sequel was selected as an automatic match.'
+
+$trainStation = New-StoreResult 'Train Station Project' 'FULL_GAME'
+$gasStation = New-StoreResult 'Gas Station Simulator' 'FULL_GAME'
+$matches = New-StoreResultList @($trainStation, $gasStation)
+$match = $provider.GetMatchingGame('Station to Station', $matches)
+Assert-Null $match 'An unrelated station game was selected as an automatic match.'
 
 $pageMetadata = $parsePageMethod.Invoke($null, @((Read-Fixture 'product-page-wukong.html')))
 Assert-Equal 'Game Science Interactive Technology Co., Ltd.' $pageMetadata.Publisher 'The product page publisher was not parsed.'
