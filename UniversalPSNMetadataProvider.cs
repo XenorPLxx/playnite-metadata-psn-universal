@@ -7,12 +7,14 @@ using Playnite.SDK.Models;
 using Playnite.SDK.Plugins;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Web;
 
 namespace UniversalPSNMetadata
 {
@@ -20,10 +22,16 @@ namespace UniversalPSNMetadata
   {
     private readonly MetadataRequestOptions options;
     private readonly UniversalPSNMetadata plugin;
+    private static readonly ILogger logger = LogManager.GetLogger();
     private MetadataFile cover;
+    private MetadataFile background;
     private string gameUrl;
     private IHtmlDocument gamePage;
-    private const string searchUrl = @"https://store.playstation.com/search/{0}";
+    private const string SearchUrl = "https://web.np.playstation.com/api/graphql/v1//op";
+    private const string SearchQueryHash = "4df6284f982e57bec70f23c77e2c219dc792eb19af7fb3d3a81767aa3f1958aa";
+    private const string StoreLocale = "en-us";
+    private const string StoreApplicationName = "@sie-ppr-web-store/app";
+    private const string StoreApplicationVersion = "0.113.0";
 
     public override List<MetadataField> AvailableFields { get; } = new List<MetadataField>
         {
@@ -80,21 +88,19 @@ namespace UniversalPSNMetadata
     public override MetadataFile GetBackgroundImage(GetMetadataFieldArgs args)
     {
       GetSearchResults(options.GameData.Name);
+      if (background != null)
+      {
+        return background;
+      }
+
       if (gameUrl != null && gameUrl != "")
       {
-        if (gamePage == null)
+        var page = GetGamePage();
+        var backgroundImageUrlTag = page?.QuerySelector(".psw-l-fit-cover");
+        var backgroundImageUrl = backgroundImageUrlTag?.GetAttribute("src");
+        if (!string.IsNullOrEmpty(backgroundImageUrl))
         {
-          using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
-          {
-            var gameSrc = webClient.DownloadString(gameUrl);
-            var parser = new HtmlParser();
-            gamePage = parser.Parse(gameSrc);
-          }
-        }
-        var backgroundImageUrlTag = gamePage.QuerySelector(".psw-l-fit-cover");
-        if (backgroundImageUrlTag != null)
-        {
-          return new MetadataFile(backgroundImageUrlTag.GetAttribute("src").Split('?')[0]);
+          return new MetadataFile(backgroundImageUrl.Split('?')[0]);
         }
       }
       return base.GetBackgroundImage(args);
@@ -106,19 +112,18 @@ namespace UniversalPSNMetadata
       GetSearchResults(options.GameData.Name);
       if (gameUrl != null && gameUrl != "")
       {
-        if (gamePage == null)
-        {
-          using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
-          {
-            var gameSrc = webClient.DownloadString(gameUrl);
-            var parser = new HtmlParser();
-            gamePage = parser.Parse(gameSrc);
-          }
-        }
-        var descriptionTag = gamePage.QuerySelector("p.psw-c-bg-card-1");
+        var page = GetGamePage();
+        var descriptionTag = page?.QuerySelector("p.psw-c-bg-card-1");
         if (descriptionTag != null)
         {
           return descriptionTag.InnerHtml;
+        }
+
+        var descriptionMetaTag = page?.QuerySelector("meta[name='description']");
+        var description = descriptionMetaTag?.GetAttribute("content");
+        if (!string.IsNullOrEmpty(description))
+        {
+          return description;
         }
       }
       return base.GetDescription(args);
@@ -132,77 +137,191 @@ namespace UniversalPSNMetadata
     public class StoreSearchResult : GenericItemOption
     {
       public string CoverUrl { get; set; }
+      public string BackgroundUrl { get; set; }
       public string GameUrl { get; set; }
     }
-
-
 
     public void GetSearchResults(string searchTerm)
     {
       if (gameUrl != null) { return; }
-      using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
-      {
+      var normalizedSearchTerm = StringExtensions.NormalizeGameName(searchTerm);
+      var results = new List<StoreSearchResult>();
 
-        var normalizedSearchTerm = StringExtensions.NormalizeGameName(searchTerm);
-        var searchPageSrc = webClient.DownloadString(string.Format(searchUrl, normalizedSearchTerm));
-        var parser = new HtmlParser();
-        var searchPage = parser.Parse(searchPageSrc);
-        var results = new List<StoreSearchResult>();
-        foreach (var gameElem in searchPage.QuerySelectorAll(".psw-grid-list li"))
+      try
+      {
+        using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
         {
-          var title = gameElem.QuerySelector(".psw-t-body").InnerHtml;
-          var coverUrl = gameElem.QuerySelector(".psw-l-fit-cover").GetAttribute("src").Split('?')[0];
-          var gameUrl = gameElem.QuerySelector(".psw-link").GetAttribute("href");
+          ConfigureStoreRequest(webClient);
+          var searchResponse = webClient.DownloadString(BuildSearchUrl(normalizedSearchTerm));
+          results = ParseSearchResults(searchResponse);
+        }
+      }
+      catch (Exception ex)
+      {
+        logger.Error(ex, "Failed to search the PlayStation Store for " + normalizedSearchTerm + ".");
+        gameUrl = string.Empty;
+        return;
+      }
+
+      if (options.IsBackgroundDownload)
+      {
+        SetSelectedGame(GetMatchingGame(normalizedSearchTerm, results));
+      }
+      else if (results.Count > 0)
+      {
+        var selectedGame = plugin.PlayniteApi.Dialogs.ChooseItemWithSearch(null, (a) =>
+        {
+          return new List<GenericItemOption>(results);
+        }, options.GameData.Name, string.Empty);
+
+        SetSelectedGame(selectedGame == null ? null : MatchFun(selectedGame.Name, results));
+      }
+      else
+      {
+        gameUrl = string.Empty;
+      }
+    }
+
+    private IHtmlDocument GetGamePage()
+    {
+      if (gamePage != null || string.IsNullOrEmpty(gameUrl))
+      {
+        return gamePage;
+      }
+
+      try
+      {
+        using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
+        {
+          var parser = new HtmlParser();
+          gamePage = parser.Parse(webClient.DownloadString(gameUrl));
+        }
+      }
+      catch (Exception ex)
+      {
+        logger.Warn(ex, "Failed to retrieve PlayStation Store product page " + gameUrl + ".");
+      }
+
+      return gamePage;
+    }
+
+    private static string BuildSearchUrl(string searchTerm)
+    {
+      var escapedSearchTerm = searchTerm.Replace("\\", "\\\\").Replace("\"", "\\\"");
+      var variables = string.Format(
+        "{{\"countryCode\":\"US\",\"languageCode\":\"en\",\"nextCursor\":\"\",\"pageOffset\":0,\"pageSize\":24,\"searchTerm\":\"{0}\"}}",
+        escapedSearchTerm);
+      var extensions = string.Format("{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{0}\"}}}}", SearchQueryHash);
+
+      return string.Format(
+        "{0}?operationName=getSearchResults&variables={1}&extensions={2}",
+        SearchUrl,
+        Uri.EscapeDataString(variables),
+        Uri.EscapeDataString(extensions));
+    }
+
+    private static void ConfigureStoreRequest(WebClient webClient)
+    {
+      webClient.Headers[HttpRequestHeader.Accept] = "application/json";
+      webClient.Headers[HttpRequestHeader.ContentType] = "application/json";
+      webClient.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+      webClient.Headers["Origin"] = "https://store.playstation.com";
+      webClient.Headers["Referer"] = "https://store.playstation.com/";
+      webClient.Headers["apollographql-client-name"] = StoreApplicationName;
+      webClient.Headers["apollographql-client-version"] = StoreApplicationVersion;
+      webClient.Headers["X-PSN-App-Ver"] = string.Format("{0}/{1}-", StoreApplicationName, StoreApplicationVersion);
+      webClient.Headers["X-PSN-Correlation-ID"] = Guid.NewGuid().ToString();
+      webClient.Headers["X-PSN-Request-ID"] = Guid.NewGuid().ToString();
+      webClient.Headers["X-PSN-Store-Locale-Override"] = "en-US";
+    }
+
+    internal static List<StoreSearchResult> ParseSearchResults(string response)
+    {
+      using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(response)))
+      {
+        var serializer = new DataContractJsonSerializer(typeof(PlayStationSearchResponse));
+        var searchResponse = serializer.ReadObject(stream) as PlayStationSearchResponse;
+        var searchResults = searchResponse?.Data?.UniversalSearch?.Results ?? new List<PlayStationSearchItem>();
+        var results = new List<StoreSearchResult>();
+
+        foreach (var result in searchResults)
+        {
+          var coverUrl = GetMediaUrl(result.Media, "MASTER", "PORTRAIT_BANNER", "EDITION_KEY_ART", "GAMEHUB_COVER_ART") ?? GetAnyImageUrl(result.Media);
+          if (string.IsNullOrEmpty(result.Name) || string.IsNullOrEmpty(coverUrl) || string.IsNullOrEmpty(result.Id))
+          {
+            continue;
+          }
+
+          var descriptionParts = new List<string>();
+          if (!string.IsNullOrEmpty(result.LocalizedStoreDisplayClassification))
+          {
+            descriptionParts.Add(result.LocalizedStoreDisplayClassification);
+          }
+
+          if (result.Platforms != null && result.Platforms.Count > 0)
+          {
+            descriptionParts.Add(string.Join(", ", result.Platforms));
+          }
+
+          var route = string.Equals(result.Type, "Concept", StringComparison.OrdinalIgnoreCase) ? "concept" : "product";
           results.Add(new StoreSearchResult
           {
-            Name = HttpUtility.HtmlDecode(title),
-            CoverUrl = HttpUtility.HtmlDecode(coverUrl),
-            GameUrl = HttpUtility.HtmlDecode(gameUrl)
+            Name = result.Name,
+            Description = string.Join(" · ", descriptionParts),
+            CoverUrl = coverUrl,
+            BackgroundUrl = GetMediaUrl(result.Media, "BACKGROUND", "SIXTEEN_BY_NINE_BANNER"),
+            GameUrl = string.Format("https://store.playstation.com/{0}/{1}/{2}", StoreLocale, route, result.Id)
           });
-
-          //cover = new MetadataFile(coverString);
-
-
-          //var gameId = gameElem.GetAttribute("psw-t-body");
-          //results.Add(new StoreSearchResult
-          //{
-          //    Name = HttpUtility.HtmlDecode(title),
-          //    Description = HttpUtility.HtmlDecode(releaseDate),
-          //    GameId = uint.Parse(gameId)
-          //});
         }
-        if (options.IsBackgroundDownload)
-        {
-          var matchedGame = GetMatchingGame(normalizedSearchTerm, results);
 
-          if (matchedGame != null)
-          {
-            cover = new MetadataFile(matchedGame.CoverUrl);
-            gameUrl = string.Concat("https://store.playstation.com", matchedGame.GameUrl);
-          }
-        }
-        else
+        return results;
+      }
+    }
+
+    private static string GetMediaUrl(List<PlayStationStoreMedia> media, params string[] roles)
+    {
+      if (media == null)
+      {
+        return null;
+      }
+
+      foreach (var role in roles)
+      {
+        var item = media.FirstOrDefault(a =>
+          string.Equals(a.Type, "IMAGE", StringComparison.OrdinalIgnoreCase) &&
+          string.Equals(a.Role, role, StringComparison.OrdinalIgnoreCase) &&
+          !string.IsNullOrEmpty(a.Url));
+        if (item != null)
         {
-          var selectedGame = plugin.PlayniteApi.Dialogs.ChooseItemWithSearch(null, (a) =>
-          {
-            var name = StringExtensions.NormalizeGameName(a);
-            return new List<GenericItemOption>(results);
-          }, options.GameData.Name, string.Empty);
-          if (selectedGame != null)
-          {
-            var matchedGame = MatchFun(selectedGame.Name, results);
-            cover = new MetadataFile(matchedGame.CoverUrl);
-            gameUrl = string.Concat("https://store.playstation.com", matchedGame.GameUrl);
-          }
-          else
-          {
-            gameUrl = "";
-          }
+          return item.Url;
         }
       }
 
+      return null;
+    }
 
-      return;
+    private static string GetAnyImageUrl(List<PlayStationStoreMedia> media)
+    {
+      return media?.FirstOrDefault(a =>
+        string.Equals(a.Type, "IMAGE", StringComparison.OrdinalIgnoreCase) &&
+        !string.IsNullOrEmpty(a.Url))?.Url;
+    }
+
+    private void SetSelectedGame(StoreSearchResult selectedGame)
+    {
+      if (selectedGame == null)
+      {
+        gameUrl = string.Empty;
+        return;
+      }
+
+      cover = new MetadataFile(selectedGame.CoverUrl);
+      if (!string.IsNullOrEmpty(selectedGame.BackgroundUrl))
+      {
+        background = new MetadataFile(selectedGame.BackgroundUrl);
+      }
+
+      gameUrl = selectedGame.GameUrl;
     }
 
     internal StoreSearchResult MatchFun(string matchName, List<StoreSearchResult> list)
@@ -310,6 +429,62 @@ namespace UniversalPSNMetadata
 
       return null;
     }
+  }
+
+  [DataContract]
+  internal class PlayStationSearchResponse
+  {
+    [DataMember(Name = "data")]
+    public PlayStationSearchData Data { get; set; }
+  }
+
+  [DataContract]
+  internal class PlayStationSearchData
+  {
+    [DataMember(Name = "universalSearch")]
+    public PlayStationSearchDataPage UniversalSearch { get; set; }
+  }
+
+  [DataContract]
+  internal class PlayStationSearchDataPage
+  {
+    [DataMember(Name = "results")]
+    public List<PlayStationSearchItem> Results { get; set; }
+  }
+
+  [DataContract]
+  internal class PlayStationSearchItem
+  {
+    [DataMember(Name = "__typename")]
+    public string Type { get; set; }
+
+    [DataMember(Name = "id")]
+    public string Id { get; set; }
+
+    [DataMember(Name = "name")]
+    public string Name { get; set; }
+
+    [DataMember(Name = "localizedStoreDisplayClassification")]
+    public string LocalizedStoreDisplayClassification { get; set; }
+
+    [DataMember(Name = "platforms")]
+    public List<string> Platforms { get; set; }
+
+    [DataMember(Name = "media")]
+    public List<PlayStationStoreMedia> Media { get; set; }
+  }
+
+  [DataContract]
+  internal class PlayStationStoreMedia
+  {
+    [DataMember(Name = "role")]
+    public string Role { get; set; }
+
+    [DataMember(Name = "type")]
+    public string Type { get; set; }
+
+    [DataMember(Name = "url")]
+    public string Url { get; set; }
   }
 
 
