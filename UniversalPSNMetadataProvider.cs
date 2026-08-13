@@ -414,7 +414,7 @@ namespace UniversalPSNMetadata
 
     internal static string BuildSearchUrl(string searchTerm, string storeLocale)
     {
-      var locale = StoreLocaleOptions.GetOrDefault(storeLocale).Split('-');
+      var locale = StoreLocaleOptions.GetValidOrDefault(storeLocale).Split('-');
       var countryCode = locale[locale.Length - 1].ToUpperInvariant();
       var languageCode = locale[0].ToLowerInvariant();
       if (languageCode == "zh" && locale.Length > 2 && locale[1].Equals("hant", StringComparison.OrdinalIgnoreCase))
@@ -454,7 +454,7 @@ namespace UniversalPSNMetadata
 
     private static string ToStoreLocaleHeader(string storeLocale)
     {
-      var locale = StoreLocaleOptions.GetOrDefault(storeLocale).Split('-');
+      var locale = StoreLocaleOptions.GetValidOrDefault(storeLocale).Split('-');
       for (var index = 0; index < locale.Length; index++)
       {
         locale[index] = index == locale.Length - 1
@@ -516,7 +516,7 @@ namespace UniversalPSNMetadata
             Platforms = result.Platforms,
             GameUrl = string.Format(
               "https://store.playstation.com/{0}/{1}/{2}",
-              StoreLocaleOptions.GetOrDefault(storeLocale),
+              StoreLocaleOptions.GetValidOrDefault(storeLocale),
               route,
               result.Id)
           });

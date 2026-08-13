@@ -59,6 +59,10 @@ $traditionalChineseSearchUrl = [Uri]::UnescapeDataString($buildSearchUrlMethod.I
 Assert-Contains $traditionalChineseSearchUrl '"countryCode":"TW"' 'Taiwan Store searches did not use the selected country.'
 Assert-Contains $traditionalChineseSearchUrl '"languageCode":"ch"' 'Traditional Chinese Store searches did not use the Store API language code.'
 
+$customSearchUrl = [Uri]::UnescapeDataString($buildSearchUrlMethod.Invoke($null, @('wukong', 'en-kz')))
+Assert-Contains $customSearchUrl '"countryCode":"KZ"' 'A valid custom Store locale did not use its country.'
+Assert-Contains $customSearchUrl '"languageCode":"en"' 'A valid custom Store locale did not use its language.'
+
 $searchError = Parse-SearchResponse (Read-Fixture 'search-response-error.json')
 Assert-Equal 0 $searchError.Results.Count 'An API error response returned games.'
 Assert-Equal 'PersistedQueryNotFound' $searchError.Error 'The Store API error was not exposed.'

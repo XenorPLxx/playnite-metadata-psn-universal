@@ -16,5 +16,10 @@
                   SelectedValuePath="Locale"
                   SelectedValue="{Binding Settings.StoreLocale, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                   IsTextSearchEnabled="True" />
+        <TextBlock Margin="0,12,0,4" FontWeight="SemiBold" Text="Store locale override (optional)" />
+        <TextBox Text="{Binding Settings.StoreLocaleOverride, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+        <TextBlock Margin="0,4,0,0"
+                   Text="Use a Store URL locale such as en-gb or zh-hant-tw. When set, it overrides the selection above."
+                   TextWrapping="Wrap" />
     </StackPanel>
 </UserControl>

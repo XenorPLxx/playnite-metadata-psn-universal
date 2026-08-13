@@ -3,17 +3,25 @@ using Playnite.SDK.Data;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace UniversalPSNMetadata
 {
     public class UniversalPSNMetadataSettings : ObservableObject
     {
         private string storeLocale = StoreLocaleOptions.DefaultLocale;
+        private string storeLocaleOverride = string.Empty;
 
         public string StoreLocale
         {
             get => storeLocale;
             set => SetValue(ref storeLocale, StoreLocaleOptions.GetOrDefault(value));
+        }
+
+        public string StoreLocaleOverride
+        {
+            get => storeLocaleOverride;
+            set => SetValue(ref storeLocaleOverride, StoreLocaleOptions.Normalize(value));
         }
     }
 
@@ -41,6 +49,7 @@ namespace UniversalPSNMetadata
             Settings = plugin.LoadPluginSettings<UniversalPSNMetadataSettings>()
                 ?? new UniversalPSNMetadataSettings();
             Settings.StoreLocale = Settings.StoreLocale;
+            Settings.StoreLocaleOverride = Settings.StoreLocaleOverride;
         }
 
         public void BeginEdit()
@@ -66,6 +75,12 @@ namespace UniversalPSNMetadata
                 errors.Add("Select a supported PlayStation Store region and language.");
             }
 
+            if (!string.IsNullOrEmpty(Settings.StoreLocaleOverride) &&
+                !StoreLocaleOptions.IsValid(Settings.StoreLocaleOverride))
+            {
+                errors.Add("Enter a Store locale such as en-gb or zh-hant-tw, or leave the override empty.");
+            }
+
             return !errors.Any();
         }
     }
@@ -85,6 +100,9 @@ namespace UniversalPSNMetadata
     internal static class StoreLocaleOptions
     {
         public const string DefaultLocale = "en-us";
+        private static readonly Regex StoreLocalePattern = new Regex(
+            "^[a-z]{2,3}(?:-[a-z]{2,4})?-[a-z]{2}$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public static IReadOnlyList<StoreLocaleOption> All { get; } = new List<StoreLocaleOption>
         {
@@ -204,6 +222,21 @@ namespace UniversalPSNMetadata
         {
             var selected = All.FirstOrDefault(option => string.Equals(option.Locale, locale, StringComparison.OrdinalIgnoreCase));
             return selected?.Locale ?? DefaultLocale;
+        }
+
+        public static bool IsValid(string locale)
+        {
+            return !string.IsNullOrWhiteSpace(locale) && StoreLocalePattern.IsMatch(locale.Trim());
+        }
+
+        public static string Normalize(string locale)
+        {
+            return string.IsNullOrWhiteSpace(locale) ? string.Empty : locale.Trim().ToLowerInvariant();
+        }
+
+        public static string GetValidOrDefault(string locale)
+        {
+            return IsValid(locale) ? Normalize(locale) : DefaultLocale;
         }
     }
 }

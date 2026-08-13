@@ -15,7 +15,19 @@ namespace UniversalPSNMetadata
 
     private UniversalPSNMetadataSettingsViewModel settings { get; set; }
 
-    internal string StoreLocale => StoreLocaleOptions.GetOrDefault(settings?.Settings?.StoreLocale);
+    internal string StoreLocale
+    {
+      get
+      {
+        var configuredSettings = settings?.Settings;
+        if (StoreLocaleOptions.IsValid(configuredSettings?.StoreLocaleOverride))
+        {
+          return StoreLocaleOptions.Normalize(configuredSettings.StoreLocaleOverride);
+        }
+
+        return StoreLocaleOptions.GetOrDefault(configuredSettings?.StoreLocale);
+      }
+    }
 
     public override Guid Id { get; } = Guid.Parse("d3aab57b-3ece-4211-8dae-40e7470bdc4c");
 
