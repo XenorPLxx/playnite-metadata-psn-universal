@@ -21,20 +21,19 @@ namespace UniversalPSNMetadata
         {
             MetadataField.Description,
             MetadataField.BackgroundImage,
-            //MetadataField.CommunityScore,
+            MetadataField.CommunityScore,
             MetadataField.CoverImage,
             //MetadataField.CriticScore,
             //MetadataField.Developers,
-            //MetadataField.Genres,
+            MetadataField.Genres,
             MetadataField.Icon,
-            //MetadataField.Links,
-            //MetadataField.Publishers,
-            //MetadataField.ReleaseDate,
+            MetadataField.Links,
+            MetadataField.Publishers,
+            MetadataField.ReleaseDate,
             //MetadataField.Features,
             //MetadataField.Name,
             //MetadataField.Platform,
             //MetadataField.Series
-            // Include addition fields if supported by the metadata source
         };
 
     // Change to something more appropriate

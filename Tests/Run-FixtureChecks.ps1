@@ -12,7 +12,9 @@ if (-not (Test-Path $pluginAssembly)) {
 $assembly = [System.Reflection.Assembly]::LoadFrom($pluginAssembly)
 $providerType = $assembly.GetType('UniversalPSNMetadata.UniversalPSNMetadataProvider')
 $resultType = $assembly.GetType('UniversalPSNMetadata.UniversalPSNMetadataProvider+StoreSearchResult')
+$pageMetadataType = $assembly.GetType('UniversalPSNMetadata.UniversalPSNMetadataProvider+StorePageMetadata')
 $parseMethod = $providerType.GetMethod('ParseSearchResults', [System.Reflection.BindingFlags]'Static, NonPublic', $null, [Type[]]@([string], [string].MakeByRefType()), $null)
+$parsePageMethod = $providerType.GetMethod('ParseStorePageMetadata', [System.Reflection.BindingFlags]'Static, NonPublic', $null, [Type[]]@([string]), $null)
 
 function Read-Fixture($name) {
     return [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "Fixtures\$name"))
@@ -58,5 +60,15 @@ $matches.Add($original)
 $matches.Add($remake)
 $match = $provider.GetMatchingGame('Final Fantasy 7 Remake', $matches)
 Assert-Equal 'Final Fantasy VII Remake' $match.Name 'The remake did not outrank the original game.'
+
+$pageMetadata = $parsePageMethod.Invoke($null, @((Read-Fixture 'product-page-wukong.html')))
+Assert-Equal 'Game Science Interactive Technology Co., Ltd.' $pageMetadata.Publisher 'The product page publisher was not parsed.'
+Assert-Equal 90 $pageMetadata.CommunityScore 'The Store star rating was not converted to a 0-100 community score.'
+Assert-Equal 3 $pageMetadata.Genres.Count 'The product page genres were not parsed.'
+Assert-Equal 'Role Playing Games' $pageMetadata.Genres[0] 'The first genre was not retained.'
+Assert-Equal 2024 $pageMetadata.ReleaseDate.Year 'The ISO release date was not parsed.'
+Assert-Equal 8 $pageMetadata.ReleaseDate.Month 'The ISO release month was not parsed.'
+Assert-Equal 20 $pageMetadata.ReleaseDate.Day 'The ISO release day was not parsed.'
+Assert-Equal 'https://example.test/wukong-hero.jpg' $pageMetadata.BackgroundImageUrl 'The hero background image was not selected.'
 
 Write-Output 'PSN Store parser and matcher fixture checks passed.'

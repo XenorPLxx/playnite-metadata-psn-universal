@@ -6,6 +6,7 @@ using Playnite.SDK.Models;
 using Playnite.SDK.Plugins;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -25,7 +26,9 @@ namespace UniversalPSNMetadata
     private MetadataFile cover;
     private MetadataFile background;
     private string gameUrl;
+    private string gamePageSource;
     private IHtmlDocument gamePage;
+    private StorePageMetadata storePageMetadata;
     private const string SearchUrl = "https://web.np.playstation.com/api/graphql/v1//op";
     private const string SearchQueryHash = "4df6284f982e57bec70f23c77e2c219dc792eb19af7fb3d3a81767aa3f1958aa";
     private const string StoreLocale = "en-us";
@@ -65,15 +68,15 @@ namespace UniversalPSNMetadata
         {
             MetadataField.Description,
             MetadataField.BackgroundImage,
-            //MetadataField.CommunityScore,
+            MetadataField.CommunityScore,
             MetadataField.CoverImage,
             //MetadataField.CriticScore,
             //MetadataField.Developers,
-            //MetadataField.Genres,
+            MetadataField.Genres,
             MetadataField.Icon,
-            //MetadataField.Links,
-            //MetadataField.Publishers,
-            //MetadataField.ReleaseDate,
+            MetadataField.Links,
+            MetadataField.Publishers,
+            MetadataField.ReleaseDate,
             //MetadataField.Features,
             //MetadataField.Name,
             //MetadataField.Platform,
@@ -85,12 +88,6 @@ namespace UniversalPSNMetadata
       this.options = options;
       this.plugin = plugin;
     }
-
-    // Override additional methods based on supported metadata fields.
-    //public override string GetDescription(GetMetadataFieldArgs args)
-    //{
-    //    return options.GameData.Name + " description";
-    //}
 
     public override MetadataFile GetCoverImage(GetMetadataFieldArgs args)
     {
@@ -121,14 +118,12 @@ namespace UniversalPSNMetadata
         return background;
       }
 
-      if (gameUrl != null && gameUrl != "")
+      if (!string.IsNullOrEmpty(gameUrl))
       {
-        var page = GetGamePage();
-        var backgroundImageUrlTag = page?.QuerySelector(".psw-l-fit-cover");
-        var backgroundImageUrl = backgroundImageUrlTag?.GetAttribute("src");
+        var backgroundImageUrl = GetStorePageMetadata()?.BackgroundImageUrl;
         if (!string.IsNullOrEmpty(backgroundImageUrl))
         {
-          return new MetadataFile(backgroundImageUrl.Split('?')[0]);
+          return new MetadataFile(backgroundImageUrl);
         }
       }
       return base.GetBackgroundImage(args);
@@ -138,23 +133,57 @@ namespace UniversalPSNMetadata
     public override string GetDescription(GetMetadataFieldArgs args)
     {
       GetSearchResults(options.GameData.Name);
-      if (gameUrl != null && gameUrl != "")
+      if (!string.IsNullOrEmpty(gameUrl))
       {
-        var page = GetGamePage();
-        var descriptionTag = page?.QuerySelector("p.psw-c-bg-card-1");
-        if (descriptionTag != null)
+        var metadata = GetStorePageMetadata();
+        if (!string.IsNullOrEmpty(metadata?.Description))
         {
-          return descriptionTag.InnerHtml;
-        }
-
-        var descriptionMetaTag = page?.QuerySelector("meta[name='description']");
-        var description = descriptionMetaTag?.GetAttribute("content");
-        if (!string.IsNullOrEmpty(description))
-        {
-          return description;
+          return metadata.Description;
         }
       }
       return base.GetDescription(args);
+    }
+
+    public override IEnumerable<MetadataProperty> GetGenres(GetMetadataFieldArgs args)
+    {
+      GetSearchResults(options.GameData.Name);
+      return GetStorePageMetadata()?.Genres.Select(genre => new MetadataNameProperty(genre))
+        ?? base.GetGenres(args);
+    }
+
+    public override IEnumerable<MetadataProperty> GetPublishers(GetMetadataFieldArgs args)
+    {
+      GetSearchResults(options.GameData.Name);
+      var publisher = GetStorePageMetadata()?.Publisher;
+      if (!string.IsNullOrEmpty(publisher))
+      {
+        return new[] { new MetadataNameProperty(publisher) };
+      }
+
+      return base.GetPublishers(args);
+    }
+
+    public override ReleaseDate? GetReleaseDate(GetMetadataFieldArgs args)
+    {
+      GetSearchResults(options.GameData.Name);
+      return GetStorePageMetadata()?.ReleaseDate ?? base.GetReleaseDate(args);
+    }
+
+    public override int? GetCommunityScore(GetMetadataFieldArgs args)
+    {
+      GetSearchResults(options.GameData.Name);
+      return GetStorePageMetadata()?.CommunityScore ?? base.GetCommunityScore(args);
+    }
+
+    public override IEnumerable<Link> GetLinks(GetMetadataFieldArgs args)
+    {
+      GetSearchResults(options.GameData.Name);
+      if (!string.IsNullOrEmpty(gameUrl))
+      {
+        return new[] { new Link("PlayStation Store", gameUrl) };
+      }
+
+      return base.GetLinks(args);
     }
 
     internal void GetGameData()
@@ -169,6 +198,16 @@ namespace UniversalPSNMetadata
       public string StoreDisplayClassification { get; set; }
       public List<string> Platforms { get; set; }
       public string GameUrl { get; set; }
+    }
+
+    internal class StorePageMetadata
+    {
+      public string Description { get; set; }
+      public string BackgroundImageUrl { get; set; }
+      public List<string> Genres { get; set; }
+      public string Publisher { get; set; }
+      public ReleaseDate? ReleaseDate { get; set; }
+      public int? CommunityScore { get; set; }
     }
 
     public void GetSearchResults(string searchTerm)
@@ -230,8 +269,8 @@ namespace UniversalPSNMetadata
       {
         using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
         {
-          var parser = new HtmlParser();
-          gamePage = parser.Parse(webClient.DownloadString(gameUrl));
+          gamePageSource = webClient.DownloadString(gameUrl);
+          gamePage = new HtmlParser().Parse(gamePageSource);
         }
       }
       catch (Exception ex)
@@ -240,6 +279,129 @@ namespace UniversalPSNMetadata
       }
 
       return gamePage;
+    }
+
+    private StorePageMetadata GetStorePageMetadata()
+    {
+      if (storePageMetadata != null || string.IsNullOrEmpty(gameUrl))
+      {
+        return storePageMetadata;
+      }
+
+      var page = GetGamePage();
+      storePageMetadata = ParseStorePageMetadata(gamePageSource, page);
+      return storePageMetadata;
+    }
+
+    internal static StorePageMetadata ParseStorePageMetadata(string pageSource)
+    {
+      if (string.IsNullOrEmpty(pageSource))
+      {
+        return null;
+      }
+
+      return ParseStorePageMetadata(pageSource, new HtmlParser().Parse(pageSource));
+    }
+
+    private static StorePageMetadata ParseStorePageMetadata(string pageSource, IHtmlDocument page)
+    {
+      if (page == null)
+      {
+        return null;
+      }
+
+      var metadata = new StorePageMetadata
+      {
+        Description = GetDescription(page),
+        BackgroundImageUrl = GetImageUrl(page,
+          "img[data-qa='gameBackgroundImage#heroImage#image-no-js']",
+          "img[data-qa='gameBackgroundImage#heroImage#preview']"),
+        Publisher = GetText(page,
+          "[data-qa='gameInfo#releaseInformation#publisher-value']",
+          "[data-qa='mfe-game-title#publisher']"),
+        Genres = GetText(page, "[data-qa='gameInfo#releaseInformation#genre-value']")
+          ?.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+          .Select(genre => genre.Trim())
+          .Where(genre => !string.IsNullOrEmpty(genre))
+          .ToList() ?? new List<string>(),
+        ReleaseDate = GetReleaseDate(pageSource, page),
+        CommunityScore = GetCommunityScore(page)
+      };
+
+      return metadata;
+    }
+
+    private static string GetDescription(IHtmlDocument page)
+    {
+      var description = page.QuerySelector("[data-qa='mfe-game-overview#description']")
+        ?? page.QuerySelector("p.psw-c-bg-card-1");
+      if (description != null)
+      {
+        return description.InnerHtml;
+      }
+
+      return page.QuerySelector("meta[name='description']")?.GetAttribute("content");
+    }
+
+    private static string GetText(IHtmlDocument page, params string[] selectors)
+    {
+      foreach (var selector in selectors)
+      {
+        var value = page.QuerySelector(selector)?.TextContent?.Trim();
+        if (!string.IsNullOrEmpty(value))
+        {
+          return value;
+        }
+      }
+
+      return null;
+    }
+
+    private static string GetImageUrl(IHtmlDocument page, params string[] selectors)
+    {
+      foreach (var selector in selectors)
+      {
+        var imageUrl = page.QuerySelector(selector)?.GetAttribute("src");
+        if (!string.IsNullOrEmpty(imageUrl))
+        {
+          return imageUrl.Split('?')[0];
+        }
+      }
+
+      return null;
+    }
+
+    private static ReleaseDate? GetReleaseDate(string pageSource, IHtmlDocument page)
+    {
+      var releaseDateMatch = Regex.Match(pageSource ?? string.Empty,
+        "\"releaseDate\"\\s*:\\s*\"(?<date>\\d{4}-\\d{2}-\\d{2})");
+      if (releaseDateMatch.Success &&
+          DateTime.TryParseExact(releaseDateMatch.Groups["date"].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+            DateTimeStyles.None, out var releaseDate))
+      {
+        return new ReleaseDate(releaseDate);
+      }
+
+      var displayDate = GetText(page, "[data-qa='gameInfo#releaseInformation#releaseDate-value']");
+      if (DateTime.TryParse(displayDate, CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.AllowWhiteSpaces,
+        out releaseDate))
+      {
+        return new ReleaseDate(releaseDate);
+      }
+
+      return null;
+    }
+
+    private static int? GetCommunityScore(IHtmlDocument page)
+    {
+      var score = GetText(page, "[data-qa='mfe-game-title#average-rating']");
+      if (!double.TryParse(score, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var rating) ||
+          rating < 0 || rating > 5)
+      {
+        return null;
+      }
+
+      return (int)Math.Round(rating * 20, MidpointRounding.AwayFromZero);
     }
 
     private static string BuildSearchUrl(string searchTerm)
