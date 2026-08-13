@@ -2,7 +2,6 @@
 using AngleSharp.Parser.Html;
 using Playnite.Common;
 using Playnite.SDK;
-using Playnite.SDK.Data;
 using Playnite.SDK.Models;
 using Playnite.SDK.Plugins;
 using System;
@@ -32,6 +31,35 @@ namespace UniversalPSNMetadata
     private const string StoreLocale = "en-us";
     private const string StoreApplicationName = "@sie-ppr-web-store/app";
     private const string StoreApplicationVersion = "0.113.0";
+    private const int WeakMatchScore = 600;
+    private const int AmbiguousMatchScoreDifference = 25;
+    private static readonly Dictionary<string, string> EditionQualifierAliases = new Dictionary<string, string>
+    {
+      { "directors cut", "directors cut" },
+      { "game of the year", "game of the year" },
+      { "digital deluxe", "digital deluxe" },
+      { "deluxe edition", "deluxe" },
+      { "complete edition", "complete" },
+      { "definitive edition", "definitive" },
+      { "ultimate edition", "ultimate" },
+      { "special edition", "special edition" },
+      { "anniversary edition", "anniversary edition" },
+      { "premium edition", "premium" },
+      { "enhanced edition", "enhanced" },
+      { "gold edition", "gold edition" },
+      { "platinum edition", "platinum edition" },
+      { "collectors edition", "collectors edition" },
+      { "standard edition", "standard" },
+      { "remastered", "remaster" },
+      { "remaster", "remaster" },
+      { "remake", "remake" },
+      { "enhanced", "enhanced" },
+      { "definitive", "definitive" },
+      { "complete", "complete" },
+      { "deluxe", "deluxe" },
+      { "ultimate", "ultimate" },
+      { "premium", "premium" }
+    };
 
     public override List<MetadataField> AvailableFields { get; } = new List<MetadataField>
         {
@@ -138,6 +166,8 @@ namespace UniversalPSNMetadata
     {
       public string CoverUrl { get; set; }
       public string BackgroundUrl { get; set; }
+      public string StoreDisplayClassification { get; set; }
+      public List<string> Platforms { get; set; }
       public string GameUrl { get; set; }
     }
 
@@ -165,7 +195,7 @@ namespace UniversalPSNMetadata
 
       if (options.IsBackgroundDownload)
       {
-        SetSelectedGame(GetMatchingGame(normalizedSearchTerm, results));
+        SetSelectedGame(GetMatchingGame(options.GameData.Name, results));
       }
       else if (results.Count > 0)
       {
@@ -270,6 +300,8 @@ namespace UniversalPSNMetadata
             Description = string.Join(" · ", descriptionParts),
             CoverUrl = coverUrl,
             BackgroundUrl = GetMediaUrl(result.Media, "BACKGROUND", "SIXTEEN_BY_NINE_BANNER"),
+            StoreDisplayClassification = result.StoreDisplayClassification,
+            Platforms = result.Platforms,
             GameUrl = string.Format("https://store.playstation.com/{0}/{1}/{2}", StoreLocale, route, result.Id)
           });
         }
@@ -335,99 +367,228 @@ namespace UniversalPSNMetadata
       return null;
     }
 
-    internal string ReplaceNumsForRomans(Match m)
+    public StoreSearchResult GetMatchingGame(string gameName, List<StoreSearchResult> results)
     {
-      return Roman.To(int.Parse(m.Value));
+      var scoredResults = results
+        .Select(result => new ScoredSearchResult(result, GetMatchScore(gameName, result)))
+        .Where(result => result.Score > 0)
+        .OrderByDescending(result => result.Score)
+        .ThenBy(result => result.Result.Name, StringComparer.InvariantCultureIgnoreCase)
+        .ToList();
+
+      if (scoredResults.Count == 0)
+      {
+        return null;
+      }
+
+      var bestResult = scoredResults[0];
+      var runnerUp = scoredResults.Skip(1).FirstOrDefault();
+      if (runnerUp != null &&
+          bestResult.Score < WeakMatchScore &&
+          bestResult.Score - runnerUp.Score < AmbiguousMatchScoreDifference)
+      {
+        logger.Debug(string.Format(
+          "Skipping ambiguous PSN Store match for {0}: {1} ({2}) vs {3} ({4}).",
+          gameName,
+          bestResult.Result.Name,
+          bestResult.Score,
+          runnerUp.Result.Name,
+          runnerUp.Score));
+        return null;
+      }
+
+      logger.Debug(string.Format(
+        "Selected PSN Store match for {0}: {1} ({2}).",
+        gameName,
+        bestResult.Result.Name,
+        bestResult.Score));
+      return bestResult.Result;
     }
 
-    public StoreSearchResult GetMatchingGame(string normalizedSearchTerm, List<StoreSearchResult> results)
+    internal int GetMatchScore(string gameName, StoreSearchResult result)
     {
-      var normalizedName = normalizedSearchTerm;
-      results.ForEach(a => a.Name = StringExtensions.NormalizeGameName(a.Name));
-
-      string testName = string.Empty;
-      StoreSearchResult matchedGame = null;
-
-      // Direct comparison
-      matchedGame = MatchFun(normalizedName, results);
-      if (matchedGame != null)
+      if (result == null || string.IsNullOrEmpty(result.Name))
       {
-        return matchedGame;
+        return 0;
       }
 
-      // Try replacing roman numerals: 3 => III
-      testName = Regex.Replace(normalizedName, @"\d+", ReplaceNumsForRomans);
-      matchedGame = MatchFun(testName, results);
-      if (matchedGame != null)
+      var requestedTitle = GetComparisonTitle(gameName);
+      var candidateTitle = GetComparisonTitle(result.Name);
+      if (string.IsNullOrEmpty(requestedTitle) || string.IsNullOrEmpty(candidateTitle))
       {
-        return matchedGame;
+        return 0;
       }
 
-      // Try adding The
-      testName = "The " + normalizedName;
-      matchedGame = MatchFun(testName, results);
-      if (matchedGame != null)
+      var requestedQualifiers = GetEditionQualifiers(requestedTitle);
+      var candidateQualifiers = GetEditionQualifiers(candidateTitle);
+      var exactTitleMatch = string.Equals(requestedTitle, candidateTitle, StringComparison.InvariantCultureIgnoreCase);
+      var baseTitleMatch = string.Equals(
+        RemoveEditionQualifiers(requestedTitle),
+        RemoveEditionQualifiers(candidateTitle),
+        StringComparison.InvariantCultureIgnoreCase);
+
+      if (!exactTitleMatch && !baseTitleMatch)
       {
-        return matchedGame;
+        return 0;
       }
 
-      // Try chaning & / and
-      testName = Regex.Replace(normalizedName, @"\s+and\s+", " & ", RegexOptions.IgnoreCase);
-      matchedGame = MatchFun(testName, results);
-      if (matchedGame != null)
+      if (requestedQualifiers.Count > 0 && !requestedQualifiers.All(candidateQualifiers.Contains))
       {
-        return matchedGame;
+        return 0;
       }
 
-      // Try removing apostrophes
-      var resCopy = Serialization.GetClone(results);
-      resCopy.ForEach(a => a.Name = a.Name.Replace("'", ""));
-      matchedGame = MatchFun(normalizedName, resCopy);
-      if (matchedGame != null)
+      if (requestedQualifiers.Count > 0 && candidateQualifiers.Except(requestedQualifiers).Any())
       {
-        return matchedGame;
+        return 0;
       }
 
-      // Try removing all ":" and "-"
-      testName = Regex.Replace(normalizedName, @"\s*(:|-)\s*", " ");
-      resCopy = Serialization.GetClone(results);
-      foreach (var res in resCopy)
+      var score = exactTitleMatch ? 1000 : 700;
+      if (requestedQualifiers.Count > 0)
       {
-        res.Name = Regex.Replace(res.Name, @"\s*(:|-)\s*", " ");
+        score += 200;
+      }
+      else if (candidateQualifiers.Count > 0)
+      {
+        score -= 200;
       }
 
-      matchedGame = MatchFun(testName, resCopy);
-      if (matchedGame != null)
-      {
-        return matchedGame;
-      }
+      score += GetClassificationScore(result.StoreDisplayClassification, requestedQualifiers.Count > 0);
+      score += GetPlatformScore(result.Platforms);
+      return score;
+    }
 
-      // Try adding 'PS4 & PS5'
-      testName = normalizedName + " PS4 & PS5";
-      resCopy = Serialization.GetClone(results);
-      matchedGame = MatchFun(testName, resCopy);
-      if (matchedGame != null)
-      {
-        return matchedGame;
-      }
+    private static string GetComparisonTitle(string title)
+    {
+      var normalizedTitle = StringExtensions.NormalizeGameName(title)
+        .Replace("&", " and ")
+        .Replace("'", string.Empty)
+        .ToLowerInvariant();
+      normalizedTitle = Regex.Replace(normalizedTitle, @"\b([1-9]|[12]\d|30)\b", ReplaceSmallNumbersForRomans);
+      normalizedTitle = Regex.Replace(normalizedTitle, @"[^a-z0-9]+", " ");
+      normalizedTitle = Regex.Replace(normalizedTitle, @"\s+", " ").Trim();
+      return Regex.Replace(normalizedTitle, @"^the\s+", string.Empty);
+    }
 
-      // Try without subtitle
-      var testResult = results.FirstOrDefault(a =>
+    private static string ReplaceSmallNumbersForRomans(Match match)
+    {
+      return Roman.To(int.Parse(match.Value)).ToLowerInvariant();
+    }
+
+    private static HashSet<string> GetEditionQualifiers(string title)
+    {
+      var qualifiers = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+      foreach (var qualifier in EditionQualifierAliases)
       {
-        if (!string.IsNullOrEmpty(a.Name) && a.Name.Contains(":"))
+        if (Regex.IsMatch(title, @"\b" + Regex.Escape(qualifier.Key) + @"\b", RegexOptions.IgnoreCase))
         {
-          return string.Equals(normalizedName, a.Name.Split(':')[0], StringComparison.InvariantCultureIgnoreCase);
+          qualifiers.Add(qualifier.Value);
         }
+      }
 
-        return false;
-      });
+      return qualifiers;
+    }
 
-      if (testResult != null)
+    private static string RemoveEditionQualifiers(string title)
+    {
+      var baseTitle = title;
+      foreach (var qualifier in EditionQualifierAliases.Keys)
       {
-        return testResult;
+        baseTitle = Regex.Replace(baseTitle, @"\b" + Regex.Escape(qualifier) + @"\b", " ", RegexOptions.IgnoreCase);
+      }
+
+      baseTitle = Regex.Replace(baseTitle, @"\bedition\b", " ", RegexOptions.IgnoreCase);
+      return Regex.Replace(baseTitle, @"\s+", " ").Trim();
+    }
+
+    private static int GetClassificationScore(string classification, bool requestedEdition)
+    {
+      switch (classification)
+      {
+        case "FULL_GAME":
+          return 80;
+        case "PREMIUM_EDITION":
+          return requestedEdition ? 60 : -80;
+        case "ADD_ON":
+        case "CHARACTER":
+        case "ITEM":
+        case "DEMO":
+          return -250;
+        default:
+          return 0;
+      }
+    }
+
+    private int GetPlatformScore(List<string> resultPlatforms)
+    {
+      var gamePlatforms = options?.GameData?.Platforms?
+        .Select(platform => GetPlayStationPlatform(platform.Name))
+        .Where(platform => !string.IsNullOrEmpty(platform))
+        .Distinct(StringComparer.InvariantCultureIgnoreCase)
+        .ToList();
+      if (gamePlatforms == null || gamePlatforms.Count == 0 || resultPlatforms == null || resultPlatforms.Count == 0)
+      {
+        return 0;
+      }
+
+      return resultPlatforms.Any(platform => gamePlatforms.Contains(platform, StringComparer.InvariantCultureIgnoreCase)) ? 60 : -40;
+    }
+
+    private static string GetPlayStationPlatform(string platformName)
+    {
+      if (string.IsNullOrEmpty(platformName))
+      {
+        return null;
+      }
+
+      if (platformName.IndexOf("PlayStation 5", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
+          string.Equals(platformName, "PS5", StringComparison.InvariantCultureIgnoreCase))
+      {
+        return "PS5";
+      }
+
+      if (platformName.IndexOf("PlayStation 4", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
+          string.Equals(platformName, "PS4", StringComparison.InvariantCultureIgnoreCase))
+      {
+        return "PS4";
+      }
+
+      if (platformName.IndexOf("PlayStation VR", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
+          string.Equals(platformName, "PS VR", StringComparison.InvariantCultureIgnoreCase))
+      {
+        return "PS VR";
+      }
+
+      if (platformName.IndexOf("PlayStation 3", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
+          string.Equals(platformName, "PS3", StringComparison.InvariantCultureIgnoreCase))
+      {
+        return "PS3";
+      }
+
+      if (platformName.IndexOf("PlayStation Vita", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
+          string.Equals(platformName, "PS Vita", StringComparison.InvariantCultureIgnoreCase))
+      {
+        return "PS Vita";
+      }
+
+      if (platformName.IndexOf("PlayStation Portable", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
+          string.Equals(platformName, "PSP", StringComparison.InvariantCultureIgnoreCase))
+      {
+        return "PSP";
       }
 
       return null;
+    }
+
+    private class ScoredSearchResult
+    {
+      public StoreSearchResult Result { get; }
+      public int Score { get; }
+
+      public ScoredSearchResult(StoreSearchResult result, int score)
+      {
+        Result = result;
+        Score = score;
+      }
     }
   }
 
@@ -466,6 +627,9 @@ namespace UniversalPSNMetadata
 
     [DataMember(Name = "localizedStoreDisplayClassification")]
     public string LocalizedStoreDisplayClassification { get; set; }
+
+    [DataMember(Name = "storeDisplayClassification")]
+    public string StoreDisplayClassification { get; set; }
 
     [DataMember(Name = "platforms")]
     public List<string> Platforms { get; set; }
