@@ -14,6 +14,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace UniversalPSNMetadata
@@ -34,6 +35,7 @@ namespace UniversalPSNMetadata
     private const string DefaultStoreLocale = StoreLocaleOptions.DefaultLocale;
     private const string StoreApplicationName = "@sie-ppr-web-store/app";
     private const string StoreApplicationVersion = "0.113.0";
+    private static readonly TimeSpan StoreRequestTimeout = TimeSpan.FromSeconds(30);
     private const int WeakMatchScore = 600;
     private const int AmbiguousMatchScoreDifference = 25;
     private static readonly Dictionary<string, string> EditionQualifierAliases = new Dictionary<string, string>
@@ -93,7 +95,7 @@ namespace UniversalPSNMetadata
 
     public override MetadataFile GetCoverImage(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
       if (cover != null)
       {
         return cover;
@@ -104,7 +106,7 @@ namespace UniversalPSNMetadata
     // Covers are square, so might be useful as icons
     public override MetadataFile GetIcon(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
       if (cover != null)
       {
         return cover;
@@ -114,7 +116,7 @@ namespace UniversalPSNMetadata
 
     public override MetadataFile GetBackgroundImage(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
       if (background != null)
       {
         return background;
@@ -122,7 +124,7 @@ namespace UniversalPSNMetadata
 
       if (!string.IsNullOrEmpty(gameUrl))
       {
-        var backgroundImageUrl = GetStorePageMetadata()?.BackgroundImageUrl;
+        var backgroundImageUrl = GetStorePageMetadata(args.CancelToken)?.BackgroundImageUrl;
         if (!string.IsNullOrEmpty(backgroundImageUrl))
         {
           return new MetadataFile(backgroundImageUrl);
@@ -134,10 +136,10 @@ namespace UniversalPSNMetadata
 
     public override string GetDescription(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
       if (!string.IsNullOrEmpty(gameUrl))
       {
-        var metadata = GetStorePageMetadata();
+        var metadata = GetStorePageMetadata(args.CancelToken);
         if (!string.IsNullOrEmpty(metadata?.Description))
         {
           return metadata.Description;
@@ -148,15 +150,15 @@ namespace UniversalPSNMetadata
 
     public override IEnumerable<MetadataProperty> GetGenres(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
-      return GetStorePageMetadata()?.Genres.Select(genre => new MetadataNameProperty(genre))
+      GetSearchResults(options.GameData.Name, args.CancelToken);
+      return GetStorePageMetadata(args.CancelToken)?.Genres.Select(genre => new MetadataNameProperty(genre))
         ?? base.GetGenres(args);
     }
 
     public override IEnumerable<MetadataProperty> GetPublishers(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
-      var publisher = GetStorePageMetadata()?.Publisher;
+      GetSearchResults(options.GameData.Name, args.CancelToken);
+      var publisher = GetStorePageMetadata(args.CancelToken)?.Publisher;
       if (!string.IsNullOrEmpty(publisher))
       {
         return new[] { new MetadataNameProperty(publisher) };
@@ -167,19 +169,19 @@ namespace UniversalPSNMetadata
 
     public override ReleaseDate? GetReleaseDate(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
-      return GetStorePageMetadata()?.ReleaseDate ?? base.GetReleaseDate(args);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
+      return GetStorePageMetadata(args.CancelToken)?.ReleaseDate ?? base.GetReleaseDate(args);
     }
 
     public override int? GetCommunityScore(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
-      return GetStorePageMetadata()?.CommunityScore ?? base.GetCommunityScore(args);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
+      return GetStorePageMetadata(args.CancelToken)?.CommunityScore ?? base.GetCommunityScore(args);
     }
 
     public override IEnumerable<Link> GetLinks(GetMetadataFieldArgs args)
     {
-      GetSearchResults(options.GameData.Name);
+      GetSearchResults(options.GameData.Name, args.CancelToken);
       if (!string.IsNullOrEmpty(gameUrl))
       {
         return new[] { new Link("PlayStation Store", gameUrl) };
@@ -214,6 +216,12 @@ namespace UniversalPSNMetadata
 
     public void GetSearchResults(string searchTerm)
     {
+      GetSearchResults(searchTerm, CancellationToken.None);
+    }
+
+    private void GetSearchResults(string searchTerm, CancellationToken cancellationToken)
+    {
+      cancellationToken.ThrowIfCancellationRequested();
       if (gameUrl != null) { return; }
       var normalizedSearchTerm = StringExtensions.NormalizeGameName(searchTerm);
       var results = new List<StoreSearchResult>();
@@ -223,7 +231,10 @@ namespace UniversalPSNMetadata
         using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
         {
           ConfigureStoreRequest(webClient, StoreLocale);
-          var searchResponse = webClient.DownloadString(BuildSearchUrl(normalizedSearchTerm, StoreLocale));
+          var searchResponse = DownloadStoreString(
+            webClient,
+            BuildSearchUrl(normalizedSearchTerm, StoreLocale),
+            cancellationToken);
           results = ParseSearchResults(searchResponse, StoreLocale, out var searchError);
           if (!string.IsNullOrEmpty(searchError))
           {
@@ -234,6 +245,16 @@ namespace UniversalPSNMetadata
           }
         }
       }
+      catch (OperationCanceledException)
+      {
+        throw;
+      }
+      catch (TimeoutException ex)
+      {
+        logger.Warn(ex, "PlayStation Store search timed out for " + normalizedSearchTerm + ".");
+        gameUrl = string.Empty;
+        return;
+      }
       catch (Exception ex)
       {
         logger.Error(ex, "Failed to search the PlayStation Store for " + normalizedSearchTerm + ".");
@@ -241,6 +262,7 @@ namespace UniversalPSNMetadata
         return;
       }
 
+      cancellationToken.ThrowIfCancellationRequested();
       if (options.IsBackgroundDownload)
       {
         SetSelectedGame(GetMatchingGame(options.GameData.Name, results));
@@ -254,6 +276,7 @@ namespace UniversalPSNMetadata
             .ToList();
         }, options.GameData.Name, string.Empty);
 
+        cancellationToken.ThrowIfCancellationRequested();
         SetSelectedGame(selectedGame as StoreSearchResult ??
           (selectedGame == null ? null : MatchFun(selectedGame.Name, results)));
       }
@@ -263,8 +286,9 @@ namespace UniversalPSNMetadata
       }
     }
 
-    private IHtmlDocument GetGamePage()
+    private IHtmlDocument GetGamePage(CancellationToken cancellationToken)
     {
+      cancellationToken.ThrowIfCancellationRequested();
       if (gamePage != null || string.IsNullOrEmpty(gameUrl))
       {
         return gamePage;
@@ -275,9 +299,17 @@ namespace UniversalPSNMetadata
         using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
         {
           ConfigureStoreRequest(webClient, StoreLocale);
-          gamePageSource = webClient.DownloadString(gameUrl);
+          gamePageSource = DownloadStoreString(webClient, gameUrl, cancellationToken);
           gamePage = new HtmlParser().Parse(gamePageSource);
         }
+      }
+      catch (OperationCanceledException)
+      {
+        throw;
+      }
+      catch (TimeoutException ex)
+      {
+        logger.Warn(ex, "PlayStation Store product page request timed out for " + gameUrl + ".");
       }
       catch (Exception ex)
       {
@@ -287,16 +319,44 @@ namespace UniversalPSNMetadata
       return gamePage;
     }
 
-    private StorePageMetadata GetStorePageMetadata()
+    private StorePageMetadata GetStorePageMetadata(CancellationToken cancellationToken)
     {
+      cancellationToken.ThrowIfCancellationRequested();
       if (storePageMetadata != null || string.IsNullOrEmpty(gameUrl))
       {
         return storePageMetadata;
       }
 
-      var page = GetGamePage();
+      var page = GetGamePage(cancellationToken);
       storePageMetadata = ParseStorePageMetadata(gamePageSource, page);
       return storePageMetadata;
+    }
+
+    private static string DownloadStoreString(WebClient webClient, string url, CancellationToken cancellationToken)
+    {
+      cancellationToken.ThrowIfCancellationRequested();
+
+      using (var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+      {
+        requestCancellation.CancelAfter(StoreRequestTimeout);
+        using (requestCancellation.Token.Register(webClient.CancelAsync))
+        {
+          try
+          {
+            var response = webClient.DownloadStringTaskAsync(new Uri(url)).GetAwaiter().GetResult();
+            cancellationToken.ThrowIfCancellationRequested();
+            return response;
+          }
+          catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+          {
+            throw new OperationCanceledException("PlayStation Store request was canceled.", ex, cancellationToken);
+          }
+          catch (Exception ex) when (requestCancellation.IsCancellationRequested)
+          {
+            throw new TimeoutException("PlayStation Store request timed out after 30 seconds.", ex);
+          }
+        }
+      }
     }
 
     internal static StorePageMetadata ParseStorePageMetadata(string pageSource)
