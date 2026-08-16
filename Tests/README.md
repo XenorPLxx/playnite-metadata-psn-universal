@@ -7,12 +7,19 @@ cover/background media extraction.
 `Fixtures/search-response-error.json` verifies the error shape returned if Sony
 changes or retires the persisted search query.
 
-After a Release build, run the checks from PowerShell:
+Run the checks with:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Tests\Run-FixtureChecks.ps1
+```
+dotnet run -c Release --project Tests/FixtureChecks
 ```
 
-The fixture runner deliberately avoids adding a test framework dependency to
-this legacy .NET Framework plugin. The fixtures also avoid a full browser HAR,
+Add `-- --live` to additionally query the real PlayStation Store, which catches
+changes to the persisted query, the request headers, and the response shape.
+
+The fixture runner deliberately avoids adding a test framework dependency. The fixtures also avoid a full browser HAR,
 which is too large and contains transient request metadata.
+Run the P11 parser and matcher fixture checks with:
+
+```powershell
+dotnet run --project Tests/FixtureChecks/FixtureChecks.csproj --configuration Release
+```

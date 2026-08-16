@@ -1,0 +1,7 @@
+id = "Xenor.UniversalPSNMetadata"
+name = "Universal PSN Metadata"
+author = "Xenor"
+version = "2.0"
+module = "UniversalPSNMetadata.dll"
+icon = "icon.png"
+source_link = "https://github.com/XenorPLxx/playnite-metadata-psn-universal"

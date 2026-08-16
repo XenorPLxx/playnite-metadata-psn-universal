@@ -1,14 +1,15 @@
-﻿<UserControl x:Class="UniversalPSNMetadata.UniversalPSNMetadataSettingsView"
+<UserControl x:Class="UniversalPSNMetadata.UniversalPSNMetadataSettingsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:p="clr-namespace:Playnite"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              mc:Ignorable="d"
              d:DesignHeight="400" d:DesignWidth="600">
     <StackPanel Margin="12">
-        <TextBlock FontWeight="SemiBold" Text="PlayStation Store region and language" />
+        <TextBlock FontWeight="SemiBold" Text="{p:LocalizedString {x:Static p:LocId.psnstore_region_label}}" />
         <TextBlock Margin="0,4,0,8"
-                   Text="Used for Store searches, links, and localized metadata such as descriptions."
+                   Text="{p:LocalizedString {x:Static p:LocId.psnstore_region_description}}"
                    TextWrapping="Wrap" />
         <ComboBox ItemsSource="{Binding StoreLocales}"
                   DisplayMemberPath="DisplayName"
@@ -16,10 +17,10 @@
                   SelectedValuePath="Locale"
                   SelectedValue="{Binding Settings.StoreLocale, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                   IsTextSearchEnabled="True" />
-        <TextBlock Margin="0,12,0,4" FontWeight="SemiBold" Text="Store locale override (optional)" />
+        <TextBlock Margin="0,12,0,4" FontWeight="SemiBold" Text="{p:LocalizedString {x:Static p:LocId.psnstore_override_label}}" />
         <TextBox Text="{Binding Settings.StoreLocaleOverride, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
         <TextBlock Margin="0,4,0,0"
-                   Text="Use a Store URL locale such as en-gb or zh-hant-tw. When set, it overrides the selection above."
+                   Text="{p:LocalizedString {x:Static p:LocId.psnstore_override_description}}"
                    TextWrapping="Wrap" />
     </StackPanel>
 </UserControl>

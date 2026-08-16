@@ -1,80 +1,62 @@
-﻿using Playnite.SDK;
-using Playnite.SDK.Plugins;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Controls;
+using Playnite;
 
-namespace UniversalPSNMetadata
+namespace UniversalPSNMetadata;
+
+public sealed class UniversalPSNMetadataPlugin : Plugin
 {
-  public class UniversalPSNMetadata : MetadataPlugin
-  {
-    private static readonly ILogger logger = LogManager.GetLogger();
+    public const string Id = "Xenor.UniversalPSNMetadata";
+    public const string ExternalIdType = "playstation_store";
+    public const string ExternalIdName = "PlayStation Store";
 
-    private UniversalPSNMetadataSettingsViewModel settings { get; set; }
+    public IPlayniteApi PlayniteApi { get; private set; } = null!;
+    public UniversalPSNMetadataSettings Settings { get; private set; } = new();
 
-    internal string StoreLocale
+    public UniversalPSNMetadataPlugin()
     {
-      get
-      {
-        var configuredSettings = settings?.Settings;
-        if (StoreLocaleOptions.IsValid(configuredSettings?.StoreLocaleOverride))
+        MetadataSettings = new MetadataSupport
         {
-          return StoreLocaleOptions.Normalize(configuredSettings.StoreLocaleOverride);
-        }
-
-        return StoreLocaleOptions.GetOrDefault(configuredSettings?.StoreLocale);
-      }
-    }
-
-    public override Guid Id { get; } = Guid.Parse("d3aab57b-3ece-4211-8dae-40e7470bdc4c");
-
-    public override List<MetadataField> SupportedFields { get; } = new List<MetadataField>
-        {
-            MetadataField.Description,
-            MetadataField.BackgroundImage,
-            MetadataField.CommunityScore,
-            MetadataField.CoverImage,
-            //MetadataField.CriticScore,
-            //MetadataField.Developers,
-            MetadataField.Genres,
-            MetadataField.Icon,
-            MetadataField.Links,
-            MetadataField.Publishers,
-            MetadataField.ReleaseDate,
-            //MetadataField.Features,
-            //MetadataField.Name,
-            //MetadataField.Platform,
-            //MetadataField.Series
+            Name = "PlayStation Store",
+            SupportedDataIds =
+            [
+                BuiltInGameDataId.Description,
+                BuiltInGameDataId.DesktopBackground,
+                BuiltInGameDataId.CommunityScore,
+                BuiltInGameDataId.DesktopCover,
+                BuiltInGameDataId.Genres,
+                BuiltInGameDataId.DesktopIcon,
+                BuiltInGameDataId.ExternalIds,
+                BuiltInGameDataId.Links,
+                BuiltInGameDataId.Publishers,
+                BuiltInGameDataId.ReleaseDate
+            ]
         };
-
-    // Change to something more appropriate
-    public override string Name => "PSN Store";
-
-    public UniversalPSNMetadata(IPlayniteAPI api) : base(api)
-    {
-      settings = new UniversalPSNMetadataSettingsViewModel(this);
-      Properties = new MetadataPluginProperties
-      {
-        HasSettings = true
-      };
     }
 
-    public override OnDemandMetadataProvider GetMetadataProvider(MetadataRequestOptions options)
+    public override Task InitializeAsync(InitializeArgs args)
     {
-      return new UniversalPSNMetadataProvider(options, this);
+        Loc.Api = args.Api;
+        PlayniteApi = args.Api;
+        Settings = UniversalPSNMetadataSettingsHandler.LoadSettings(PlayniteApi.UserDataDir);
+        return Task.CompletedTask;
     }
 
-    public override ISettings GetSettings(bool firstRunSettings)
+    public override Task<MetadataProvider?> GetMetadataProviderAsync(GetMetadataProviderArgs args)
     {
-      return settings;
+        var locale = StoreLocaleOptions.Resolve(
+            Settings.StoreLocaleOverride,
+            Settings.StoreLocale,
+            PlayniteApi.Settings.Language);
+        return Task.FromResult<MetadataProvider?>(new UniversalPSNMetadataProvider(PlayniteApi, args, locale));
     }
 
-    public override UserControl GetSettingsView(bool firstRunSettings)
+    public override Task<PluginSettingsHandler?> GetSettingsHandlerAsync(GetSettingsHandlerArgs args)
     {
-      return new UniversalPSNMetadataSettingsView();
+        return Task.FromResult<PluginSettingsHandler?>(new UniversalPSNMetadataSettingsHandler(this));
     }
-  }
+
+    internal bool SaveSettings(UniversalPSNMetadataSettings settings)
+    {
+        Settings = settings;
+        return UniversalPSNMetadataSettingsHandler.SaveSettings(PlayniteApi.UserDataDir, settings);
+    }
 }

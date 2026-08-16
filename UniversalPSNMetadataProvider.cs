@@ -1,986 +1,678 @@
-﻿using AngleSharp.Dom.Html;
-using AngleSharp.Parser.Html;
-using Playnite.Common;
-using Playnite.SDK;
-using Playnite.SDK.Models;
-using Playnite.SDK.Plugins;
-using System;
-using System.Collections.Generic;
+using AngleSharp.Html.Dom;
+using AngleSharp.Html.Parser;
+using Playnite;
 using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Runtime.Serialization;
-using System.Runtime.Serialization.Json;
-using System.Text;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
 
-namespace UniversalPSNMetadata
+namespace UniversalPSNMetadata;
+
+public sealed class UniversalPSNMetadataProvider : MetadataProvider
 {
-  public class UniversalPSNMetadataProvider : OnDemandMetadataProvider
-  {
-    private readonly MetadataRequestOptions options;
-    private readonly UniversalPSNMetadata plugin;
+    private readonly IPlayniteApi playniteApi;
+    private readonly Plugin.GetMetadataProviderArgs metadataArgs;
+    private readonly string storeLocale;
+
+    public UniversalPSNMetadataProvider(IPlayniteApi playniteApi, Plugin.GetMetadataProviderArgs metadataArgs, string storeLocale)
+    {
+        this.playniteApi = playniteApi;
+        this.metadataArgs = metadataArgs;
+        this.storeLocale = storeLocale;
+    }
+
+    public override Task<MetadataProviderGameSession?> CreateGameSessionAsync(CreateGameMetadataSessionArgs args)
+    {
+        return Task.FromResult<MetadataProviderGameSession?>(
+            new UniversalPSNMetadataGameSession(playniteApi, metadataArgs, storeLocale, args.Game));
+    }
+}
+
+internal sealed class UniversalPSNMetadataGameSession : MetadataProviderGameSession
+{
     private static readonly ILogger logger = LogManager.GetLogger();
-    private MetadataFile cover;
-    private MetadataFile background;
-    private string gameUrl;
-    private string gamePageSource;
-    private IHtmlDocument gamePage;
-    private StorePageMetadata storePageMetadata;
-    private const string SearchUrl = "https://web.np.playstation.com/api/graphql/v1//op";
-    private const string SearchQueryHash = "4df6284f982e57bec70f23c77e2c219dc792eb19af7fb3d3a81767aa3f1958aa";
-    private const string DefaultStoreLocale = StoreLocaleOptions.DefaultLocale;
-    private const string StoreApplicationName = "@sie-ppr-web-store/app";
-    private const string StoreApplicationVersion = "0.113.0";
-    private static readonly TimeSpan StoreRequestTimeout = TimeSpan.FromSeconds(30);
-    private const int WeakMatchScore = 600;
-    private const int AmbiguousMatchScoreDifference = 25;
-    private static readonly Dictionary<string, string> EditionQualifierAliases = new Dictionary<string, string>
-    {
-      { "directors cut", "directors cut" },
-      { "game of the year", "game of the year" },
-      { "digital deluxe", "digital deluxe" },
-      { "deluxe edition", "deluxe" },
-      { "complete edition", "complete" },
-      { "definitive edition", "definitive" },
-      { "ultimate edition", "ultimate" },
-      { "special edition", "special edition" },
-      { "anniversary edition", "anniversary edition" },
-      { "premium edition", "premium" },
-      { "enhanced edition", "enhanced" },
-      { "gold edition", "gold edition" },
-      { "platinum edition", "platinum edition" },
-      { "collectors edition", "collectors edition" },
-      { "standard edition", "standard" },
-      { "remastered", "remaster" },
-      { "remaster", "remaster" },
-      { "remake", "remake" },
-      { "enhanced", "enhanced" },
-      { "definitive", "definitive" },
-      { "complete", "complete" },
-      { "deluxe", "deluxe" },
-      { "ultimate", "ultimate" },
-      { "premium", "premium" }
-    };
+    private static readonly HttpClient httpClient = new();
+    private static readonly TimeSpan requestTimeout = TimeSpan.FromSeconds(30);
 
-    public override List<MetadataField> AvailableFields { get; } = new List<MetadataField>
+    private readonly IPlayniteApi playniteApi;
+    private readonly Plugin.GetMetadataProviderArgs metadataArgs;
+    private readonly string storeLocale;
+    private Task<StoreSearchResult?>? selectionTask;
+    private Task<StorePageMetadata?>? pageMetadataTask;
+
+    public UniversalPSNMetadataGameSession(
+        IPlayniteApi playniteApi,
+        Plugin.GetMetadataProviderArgs metadataArgs,
+        string storeLocale,
+        Game game) : base(game)
+    {
+        this.playniteApi = playniteApi;
+        this.metadataArgs = metadataArgs;
+        this.storeLocale = storeLocale;
+    }
+
+    public override async Task<object?> GetDataAsync(GetDataArgs dataArgs)
+    {
+        switch (dataArgs.DataId)
         {
-            MetadataField.Description,
-            MetadataField.BackgroundImage,
-            MetadataField.CommunityScore,
-            MetadataField.CoverImage,
-            //MetadataField.CriticScore,
-            //MetadataField.Developers,
-            MetadataField.Genres,
-            MetadataField.Icon,
-            MetadataField.Links,
-            MetadataField.Publishers,
-            MetadataField.ReleaseDate,
-            //MetadataField.Features,
-            //MetadataField.Name,
-            //MetadataField.Platform,
-            //MetadataField.Series
+            case BuiltInGameDataId.DesktopCover:
+                return await GetCoverAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.DesktopIcon:
+                return await GetIconAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.DesktopBackground:
+                return await GetBackgroundAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.Description:
+                return await GetDescriptionAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.Genres:
+                return await GetGenresAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.Publishers:
+                return await GetPublishersAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.ReleaseDate:
+                return await GetReleaseDateAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.CommunityScore:
+                return await GetCommunityScoreAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.ExternalIds:
+                return await GetStoreIdAsync(dataArgs.CancelToken);
+            case BuiltInGameDataId.Links:
+                return await GetLinksAsync(dataArgs.CancelToken);
+            default:
+                return null;
+        }
+    }
+
+    private async Task<ImportableFile?> GetCoverAsync(CancellationToken cancelToken)
+    {
+        var game = await GetSelectedGameAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(game?.CoverUrl) ? null : new ImportableFile(BuiltInGameDataId.DesktopCover, game.CoverUrl);
+    }
+
+    private async Task<ImportableFile?> GetIconAsync(CancellationToken cancelToken)
+    {
+        var game = await GetSelectedGameAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(game?.CoverUrl) ? null : new ImportableFile(BuiltInGameDataId.DesktopIcon, game.CoverUrl);
+    }
+
+    private async Task<ImportableFile?> GetBackgroundAsync(CancellationToken cancelToken)
+    {
+        var game = await GetSelectedGameAsync(cancelToken);
+        if (!string.IsNullOrWhiteSpace(game?.BackgroundUrl))
+        {
+            return new ImportableFile(BuiltInGameDataId.DesktopBackground, game.BackgroundUrl);
+        }
+
+        var metadata = await GetStorePageMetadataAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(metadata?.BackgroundImageUrl)
+            ? null
+            : new ImportableFile(BuiltInGameDataId.DesktopBackground, metadata.BackgroundImageUrl);
+    }
+
+    private async Task<GameDescription?> GetDescriptionAsync(CancellationToken cancelToken)
+    {
+        var metadata = await GetStorePageMetadataAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(metadata?.Description)
+            ? null
+            : new GameDescription(metadata.Description, GameDescriptionFormat.HTML);
+    }
+
+    private async Task<List<NameImportableProperty>?> GetGenresAsync(CancellationToken cancelToken)
+    {
+        var metadata = await GetStorePageMetadataAsync(cancelToken);
+        return metadata?.Genres.Count > 0
+            ? metadata.Genres.Select(genre => new NameImportableProperty(genre)).ToList()
+            : null;
+    }
+
+    private async Task<List<NameImportableProperty>?> GetPublishersAsync(CancellationToken cancelToken)
+    {
+        var metadata = await GetStorePageMetadataAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(metadata?.Publisher)
+            ? null
+            : [new NameImportableProperty(metadata.Publisher)];
+    }
+
+    private async Task<PartialDate?> GetReleaseDateAsync(CancellationToken cancelToken)
+    {
+        var metadata = await GetStorePageMetadataAsync(cancelToken);
+        return metadata?.ReleaseDate;
+    }
+
+    private async Task<int?> GetCommunityScoreAsync(CancellationToken cancelToken)
+    {
+        var metadata = await GetStorePageMetadataAsync(cancelToken);
+        return metadata?.CommunityScore;
+    }
+
+    private async Task<ImportableExternalIdentifier?> GetStoreIdAsync(CancellationToken cancelToken)
+    {
+        var game = await GetSelectedGameAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(game?.StoreId)
+            ? null
+            : new ImportableExternalIdentifier(
+                UniversalPSNMetadataPlugin.ExternalIdType,
+                UniversalPSNMetadataPlugin.ExternalIdName,
+                game.StoreId);
+    }
+
+    private async Task<List<ImportableWebLink>?> GetLinksAsync(CancellationToken cancelToken)
+    {
+        var game = await GetSelectedGameAsync(cancelToken);
+        return string.IsNullOrWhiteSpace(game?.GameUrl)
+            ? null
+            : [new ImportableWebLink("playstation.store", "PlayStation Store", game.GameUrl)];
+    }
+
+    private async Task<StoreSearchResult?> GetSelectedGameAsync(CancellationToken cancelToken)
+    {
+        if (selectionTask is { IsCompletedSuccessfully: true })
+        {
+            return await selectionTask;
+        }
+
+        var task = ResolveSelectedGameAsync(cancelToken);
+        selectionTask = task;
+        var result = await task;
+        return result;
+    }
+
+    private async Task<StoreSearchResult?> ResolveSelectedGameAsync(CancellationToken cancelToken)
+    {
+        if (metadataArgs.Type == MetadataDownloadType.BackgroundDownload)
+        {
+            try
+            {
+                var results = await SearchStoreAsync(Game.Name, cancelToken);
+                return GetMatchingGame(Game.Name, results, GetGamePlatformNames());
+            }
+            catch (OperationCanceledException) when (cancelToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                logger.Error(e, $"Failed to search the PlayStation Store for {Game.Name}.");
+                return null;
+            }
+        }
+
+        var platforms = GetGamePlatformNames();
+        try
+        {
+            var item = await playniteApi.Dialogs.ChooseItemWithSearchAsync(
+                Game.Name,
+                async args =>
+                {
+                    if (string.IsNullOrWhiteSpace(args.SearchTerm))
+                    {
+                        return [];
+                    }
+
+                    try
+                    {
+                        var results = await SearchStoreAsync(args.SearchTerm, args.CancelToken);
+                        // Present the best match first rather than raw Store order.
+                        return SortByMatch(args.SearchTerm, results, platforms).Cast<ChooseDialogItem>().ToList();
+                    }
+                    catch (OperationCanceledException) when (args.CancelToken.IsCancellationRequested)
+                    {
+                        return [];
+                    }
+                    catch (Exception e)
+                    {
+                        logger.Error(e, $"Failed to search the PlayStation Store for {args.SearchTerm}.");
+                        return [];
+                    }
+                },
+                Loc.psnstore_search_caption());
+            return item as StoreSearchResult;
+        }
+        catch (OperationCanceledException) when (cancelToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            logger.Error(e, $"The PlayStation Store picker failed for {Game.Name}.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The game's platform names, used only to prefer Store products sold for them. The game holds
+    /// platform ids, so the names have to be looked up in the library.
+    /// </summary>
+    private List<string> GetGamePlatformNames()
+    {
+        if (Game.PlatformIds is not { Count: > 0 })
+        {
+            return [];
+        }
+
+        try
+        {
+            return playniteApi.Library.Platforms
+                .Get(Game.PlatformIds)
+                .Select(platform => platform?.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Cast<string>()
+                .ToList();
+        }
+        catch (Exception e)
+        {
+            // Platform names only refine the ranking, so losing them must not fail the lookup.
+            logger.Error(e, "Failed to read platform names for PlayStation Store matching.");
+            return [];
+        }
+    }
+
+    private async Task<StorePageMetadata?> GetStorePageMetadataAsync(CancellationToken cancelToken)
+    {
+        if (pageMetadataTask is { IsCompletedSuccessfully: true })
+        {
+            return await pageMetadataTask;
+        }
+
+        var task = ResolveStorePageMetadataAsync(cancelToken);
+        pageMetadataTask = task;
+        return await task;
+    }
+
+    private async Task<StorePageMetadata?> ResolveStorePageMetadataAsync(CancellationToken cancelToken)
+    {
+        var game = await GetSelectedGameAsync(cancelToken);
+        if (string.IsNullOrWhiteSpace(game?.GameUrl))
+        {
+            return null;
+        }
+
+        try
+        {
+            return ParseStorePageMetadata(await DownloadStoreStringAsync(game.GameUrl, cancelToken));
+        }
+        catch (OperationCanceledException) when (cancelToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            logger.Warn(e, $"Failed to retrieve PlayStation Store product page {game.GameUrl}.");
+            return null;
+        }
+    }
+
+    private async Task<List<StoreSearchResult>> SearchStoreAsync(string searchTerm, CancellationToken cancelToken)
+    {
+        var normalizedName = NormalizeGameName(searchTerm);
+        var response = await DownloadStoreStringAsync(BuildSearchUrl(normalizedName, storeLocale), cancelToken);
+        var results = ParseSearchResults(response, storeLocale, out var searchError);
+        if (!string.IsNullOrWhiteSpace(searchError))
+        {
+            logger.Warn($"PlayStation Store search returned an API error for {normalizedName}: {searchError}");
+        }
+
+        return results;
+    }
+
+    private async Task<string> DownloadStoreStringAsync(string url, CancellationToken cancelToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancelToken);
+        timeout.CancelAfter(requestTimeout);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        ConfigureStoreRequest(request.Headers, storeLocale);
+        using var response = await httpClient.SendAsync(request, timeout.Token);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(timeout.Token);
+    }
+
+    internal static StorePageMetadata? ParseStorePageMetadata(string pageSource)
+    {
+        if (string.IsNullOrWhiteSpace(pageSource)) return null;
+        var page = new HtmlParser().ParseDocument(pageSource);
+        return new StorePageMetadata
+        {
+            Description = GetDescription(page),
+            BackgroundImageUrl = GetImageUrl(page, "img[data-qa='gameBackgroundImage#heroImage#image-no-js']", "img[data-qa='gameBackgroundImage#heroImage#preview']"),
+            Publisher = GetText(page, "[data-qa='gameInfo#releaseInformation#publisher-value']", "[data-qa='mfe-game-title#publisher']"),
+            Genres = GetText(page, "[data-qa='gameInfo#releaseInformation#genre-value']")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() ?? [],
+            ReleaseDate = GetReleaseDate(pageSource, page),
+            CommunityScore = GetCommunityScore(page)
         };
-
-    public UniversalPSNMetadataProvider(MetadataRequestOptions options, UniversalPSNMetadata plugin)
-    {
-      this.options = options;
-      this.plugin = plugin;
     }
 
-    private string StoreLocale => StoreLocaleOptions.GetOrDefault(plugin?.StoreLocale);
-
-    public override MetadataFile GetCoverImage(GetMetadataFieldArgs args)
+    internal static List<StoreSearchResult> ParseSearchResults(string response, string storeLocale, out string? searchError)
     {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      if (cover != null)
-      {
-        return cover;
-      }
-      return base.GetCoverImage(args);
-    }
-
-    // Covers are square, so might be useful as icons
-    public override MetadataFile GetIcon(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      if (cover != null)
-      {
-        return cover;
-      }
-      return base.GetIcon(args);
-    }
-
-    public override MetadataFile GetBackgroundImage(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      if (background != null)
-      {
-        return background;
-      }
-
-      if (!string.IsNullOrEmpty(gameUrl))
-      {
-        var backgroundImageUrl = GetStorePageMetadata(args.CancelToken)?.BackgroundImageUrl;
-        if (!string.IsNullOrEmpty(backgroundImageUrl))
+        searchError = null;
+        using var document = JsonDocument.Parse(response);
+        var root = document.RootElement;
+        if (root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array && errors.GetArrayLength() > 0)
         {
-          return new MetadataFile(backgroundImageUrl);
+            searchError = string.Join("; ", errors.EnumerateArray()
+                .Where(error => error.TryGetProperty("message", out _))
+                .Select(error => error.GetProperty("message").GetString())
+                .Where(message => !string.IsNullOrWhiteSpace(message)));
+            if (string.IsNullOrWhiteSpace(searchError))
+            {
+                searchError = null;
+            }
         }
-      }
-      return base.GetBackgroundImage(args);
-    }
 
-
-    public override string GetDescription(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      if (!string.IsNullOrEmpty(gameUrl))
-      {
-        var metadata = GetStorePageMetadata(args.CancelToken);
-        if (!string.IsNullOrEmpty(metadata?.Description))
+        if (!root.TryGetProperty("data", out var data) || !data.TryGetProperty("universalSearch", out var search) ||
+            !search.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
         {
-          return metadata.Description;
+            searchError ??= "The response did not contain universal search data. The Store API may have changed.";
+            return [];
         }
-      }
-      return base.GetDescription(args);
-    }
 
-    public override IEnumerable<MetadataProperty> GetGenres(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      return GetStorePageMetadata(args.CancelToken)?.Genres.Select(genre => new MetadataNameProperty(genre))
-        ?? base.GetGenres(args);
-    }
-
-    public override IEnumerable<MetadataProperty> GetPublishers(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      var publisher = GetStorePageMetadata(args.CancelToken)?.Publisher;
-      if (!string.IsNullOrEmpty(publisher))
-      {
-        return new[] { new MetadataNameProperty(publisher) };
-      }
-
-      return base.GetPublishers(args);
-    }
-
-    public override ReleaseDate? GetReleaseDate(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      return GetStorePageMetadata(args.CancelToken)?.ReleaseDate ?? base.GetReleaseDate(args);
-    }
-
-    public override int? GetCommunityScore(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      return GetStorePageMetadata(args.CancelToken)?.CommunityScore ?? base.GetCommunityScore(args);
-    }
-
-    public override IEnumerable<Link> GetLinks(GetMetadataFieldArgs args)
-    {
-      GetSearchResults(options.GameData.Name, args.CancelToken);
-      if (!string.IsNullOrEmpty(gameUrl))
-      {
-        return new[] { new Link("PlayStation Store", gameUrl) };
-      }
-
-      return base.GetLinks(args);
-    }
-
-    internal void GetGameData()
-    {
-
-    }
-
-    public class StoreSearchResult : GenericItemOption
-    {
-      public string CoverUrl { get; set; }
-      public string BackgroundUrl { get; set; }
-      public string StoreDisplayClassification { get; set; }
-      public List<string> Platforms { get; set; }
-      public string GameUrl { get; set; }
-    }
-
-    internal class StorePageMetadata
-    {
-      public string Description { get; set; }
-      public string BackgroundImageUrl { get; set; }
-      public List<string> Genres { get; set; }
-      public string Publisher { get; set; }
-      public ReleaseDate? ReleaseDate { get; set; }
-      public int? CommunityScore { get; set; }
-    }
-
-    public void GetSearchResults(string searchTerm)
-    {
-      GetSearchResults(searchTerm, CancellationToken.None);
-    }
-
-    private void GetSearchResults(string searchTerm, CancellationToken cancellationToken)
-    {
-      cancellationToken.ThrowIfCancellationRequested();
-      if (gameUrl != null) { return; }
-      var normalizedSearchTerm = StringExtensions.NormalizeGameName(searchTerm);
-      var results = new List<StoreSearchResult>();
-
-      try
-      {
-        using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
+        var parsed = new List<StoreSearchResult>();
+        foreach (var result in results.EnumerateArray())
         {
-          ConfigureStoreRequest(webClient, StoreLocale);
-          var searchResponse = DownloadStoreString(
-            webClient,
-            BuildSearchUrl(normalizedSearchTerm, StoreLocale),
-            cancellationToken);
-          results = ParseSearchResults(searchResponse, StoreLocale, out var searchError);
-          if (!string.IsNullOrEmpty(searchError))
-          {
-            logger.Warn(string.Format(
-              "PlayStation Store search returned an API error for {0}: {1}",
-              normalizedSearchTerm,
-              searchError));
-          }
+            var name = GetJsonString(result, "name");
+            var id = GetJsonString(result, "id");
+            var cover = GetMediaUrl(result, "MASTER", "PORTRAIT_BANNER", "EDITION_KEY_ART", "GAMEHUB_COVER_ART") ?? GetAnyImageUrl(result);
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(cover)) continue;
+
+            var platforms = result.TryGetProperty("platforms", out var platformsElement) && platformsElement.ValueKind == JsonValueKind.Array
+                ? platformsElement.EnumerateArray().Select(platform => platform.GetString()).Where(platform => !string.IsNullOrWhiteSpace(platform)).Cast<string>().ToList()
+                : [];
+            var classification = GetJsonString(result, "localizedStoreDisplayClassification");
+            var description = string.Join(" · ", new[] { classification, platforms.Count > 0 ? string.Join(", ", platforms) : null }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            var route = string.Equals(GetJsonString(result, "__typename"), "Concept", StringComparison.OrdinalIgnoreCase) ? "concept" : "product";
+            parsed.Add(new StoreSearchResult(name, description)
+            {
+                CoverUrl = cover,
+                BackgroundUrl = GetMediaUrl(result, "BACKGROUND", "SIXTEEN_BY_NINE_BANNER"),
+                StoreDisplayClassification = GetJsonString(result, "storeDisplayClassification"),
+                Platforms = platforms,
+                StoreId = id,
+                GameUrl = $"https://store.playstation.com/{StoreLocaleOptions.GetValidOrDefault(storeLocale)}/{route}/{id}"
+            });
         }
-      }
-      catch (OperationCanceledException)
-      {
-        throw;
-      }
-      catch (TimeoutException ex)
-      {
-        logger.Warn(ex, "PlayStation Store search timed out for " + normalizedSearchTerm + ".");
-        gameUrl = string.Empty;
-        return;
-      }
-      catch (Exception ex)
-      {
-        logger.Error(ex, "Failed to search the PlayStation Store for " + normalizedSearchTerm + ".");
-        gameUrl = string.Empty;
-        return;
-      }
 
-      cancellationToken.ThrowIfCancellationRequested();
-      if (options.IsBackgroundDownload)
-      {
-        SetSelectedGame(GetMatchingGame(options.GameData.Name, results));
-      }
-      else if (results.Count > 0)
-      {
-        var selectedGame = plugin.PlayniteApi.Dialogs.ChooseItemWithSearch(null, (a) =>
-        {
-          return GetScoredSearchResults(a, results)
-            .Select(result => (GenericItemOption)result.Result)
-            .ToList();
-        }, options.GameData.Name, string.Empty);
-
-        cancellationToken.ThrowIfCancellationRequested();
-        SetSelectedGame(selectedGame as StoreSearchResult ??
-          (selectedGame == null ? null : MatchFun(selectedGame.Name, results)));
-      }
-      else
-      {
-        gameUrl = string.Empty;
-      }
-    }
-
-    private IHtmlDocument GetGamePage(CancellationToken cancellationToken)
-    {
-      cancellationToken.ThrowIfCancellationRequested();
-      if (gamePage != null || string.IsNullOrEmpty(gameUrl))
-      {
-        return gamePage;
-      }
-
-      try
-      {
-        using (var webClient = new WebClient { Encoding = Encoding.UTF8 })
-        {
-          ConfigureStoreRequest(webClient, StoreLocale);
-          gamePageSource = DownloadStoreString(webClient, gameUrl, cancellationToken);
-          gamePage = new HtmlParser().Parse(gamePageSource);
-        }
-      }
-      catch (OperationCanceledException)
-      {
-        throw;
-      }
-      catch (TimeoutException ex)
-      {
-        logger.Warn(ex, "PlayStation Store product page request timed out for " + gameUrl + ".");
-      }
-      catch (Exception ex)
-      {
-        logger.Warn(ex, "Failed to retrieve PlayStation Store product page " + gameUrl + ".");
-      }
-
-      return gamePage;
-    }
-
-    private StorePageMetadata GetStorePageMetadata(CancellationToken cancellationToken)
-    {
-      cancellationToken.ThrowIfCancellationRequested();
-      if (storePageMetadata != null || string.IsNullOrEmpty(gameUrl))
-      {
-        return storePageMetadata;
-      }
-
-      var page = GetGamePage(cancellationToken);
-      storePageMetadata = ParseStorePageMetadata(gamePageSource, page);
-      return storePageMetadata;
-    }
-
-    private static string DownloadStoreString(WebClient webClient, string url, CancellationToken cancellationToken)
-    {
-      cancellationToken.ThrowIfCancellationRequested();
-
-      using (var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-      {
-        requestCancellation.CancelAfter(StoreRequestTimeout);
-        using (requestCancellation.Token.Register(webClient.CancelAsync))
-        {
-          try
-          {
-            var response = webClient.DownloadStringTaskAsync(new Uri(url)).GetAwaiter().GetResult();
-            cancellationToken.ThrowIfCancellationRequested();
-            return response;
-          }
-          catch (Exception ex) when (cancellationToken.IsCancellationRequested)
-          {
-            throw new OperationCanceledException("PlayStation Store request was canceled.", ex, cancellationToken);
-          }
-          catch (Exception ex) when (requestCancellation.IsCancellationRequested)
-          {
-            throw new TimeoutException("PlayStation Store request timed out after 30 seconds.", ex);
-          }
-        }
-      }
-    }
-
-    internal static StorePageMetadata ParseStorePageMetadata(string pageSource)
-    {
-      if (string.IsNullOrEmpty(pageSource))
-      {
-        return null;
-      }
-
-      return ParseStorePageMetadata(pageSource, new HtmlParser().Parse(pageSource));
-    }
-
-    private static StorePageMetadata ParseStorePageMetadata(string pageSource, IHtmlDocument page)
-    {
-      if (page == null)
-      {
-        return null;
-      }
-
-      var metadata = new StorePageMetadata
-      {
-        Description = GetDescription(page),
-        BackgroundImageUrl = GetImageUrl(page,
-          "img[data-qa='gameBackgroundImage#heroImage#image-no-js']",
-          "img[data-qa='gameBackgroundImage#heroImage#preview']"),
-        Publisher = GetText(page,
-          "[data-qa='gameInfo#releaseInformation#publisher-value']",
-          "[data-qa='mfe-game-title#publisher']"),
-        Genres = GetText(page, "[data-qa='gameInfo#releaseInformation#genre-value']")
-          ?.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-          .Select(genre => genre.Trim())
-          .Where(genre => !string.IsNullOrEmpty(genre))
-          .ToList() ?? new List<string>(),
-        ReleaseDate = GetReleaseDate(pageSource, page),
-        CommunityScore = GetCommunityScore(page)
-      };
-
-      return metadata;
-    }
-
-    private static string GetDescription(IHtmlDocument page)
-    {
-      var description = page.QuerySelector("[data-qa='mfe-game-overview#description']")
-        ?? page.QuerySelector("p.psw-c-bg-card-1");
-      if (description != null)
-      {
-        return description.InnerHtml;
-      }
-
-      return page.QuerySelector("meta[name='description']")?.GetAttribute("content");
-    }
-
-    private static string GetText(IHtmlDocument page, params string[] selectors)
-    {
-      foreach (var selector in selectors)
-      {
-        var value = page.QuerySelector(selector)?.TextContent?.Trim();
-        if (!string.IsNullOrEmpty(value))
-        {
-          return value;
-        }
-      }
-
-      return null;
-    }
-
-    private static string GetImageUrl(IHtmlDocument page, params string[] selectors)
-    {
-      foreach (var selector in selectors)
-      {
-        var imageUrl = page.QuerySelector(selector)?.GetAttribute("src");
-        if (!string.IsNullOrEmpty(imageUrl))
-        {
-          return imageUrl.Split('?')[0];
-        }
-      }
-
-      return null;
-    }
-
-    private static ReleaseDate? GetReleaseDate(string pageSource, IHtmlDocument page)
-    {
-      var releaseDateMatch = Regex.Match(pageSource ?? string.Empty,
-        "\"releaseDate\"\\s*:\\s*\"(?<date>\\d{4}-\\d{2}-\\d{2})");
-      if (releaseDateMatch.Success &&
-          DateTime.TryParseExact(releaseDateMatch.Groups["date"].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var releaseDate))
-      {
-        return new ReleaseDate(releaseDate);
-      }
-
-      var displayDate = GetText(page, "[data-qa='gameInfo#releaseInformation#releaseDate-value']");
-      if (DateTime.TryParse(displayDate, CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.AllowWhiteSpaces,
-        out releaseDate))
-      {
-        return new ReleaseDate(releaseDate);
-      }
-
-      return null;
-    }
-
-    private static int? GetCommunityScore(IHtmlDocument page)
-    {
-      var score = GetText(page, "[data-qa='mfe-game-title#average-rating']");
-      if (!double.TryParse(score, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var rating) ||
-          rating < 0 || rating > 5)
-      {
-        return null;
-      }
-
-      return (int)Math.Round(rating * 20, MidpointRounding.AwayFromZero);
-    }
-
-    private static string BuildSearchUrl(string searchTerm)
-    {
-      return BuildSearchUrl(searchTerm, DefaultStoreLocale);
+        return parsed;
     }
 
     internal static string BuildSearchUrl(string searchTerm, string storeLocale)
     {
-      var locale = StoreLocaleOptions.GetValidOrDefault(storeLocale).Split('-');
-      var countryCode = locale[locale.Length - 1].ToUpperInvariant();
-      var languageCode = locale[0].ToLowerInvariant();
-      if (languageCode == "zh" && locale.Length > 2 && locale[1].Equals("hant", StringComparison.OrdinalIgnoreCase))
-      {
-        languageCode = "ch";
-      }
-
-      var escapedSearchTerm = searchTerm.Replace("\\", "\\\\").Replace("\"", "\\\"");
-      var variables = string.Format(
-        "{{\"countryCode\":\"{0}\",\"languageCode\":\"{1}\",\"nextCursor\":\"\",\"pageOffset\":0,\"pageSize\":24,\"searchTerm\":\"{2}\"}}",
-        countryCode,
-        languageCode,
-        escapedSearchTerm);
-      var extensions = string.Format("{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{0}\"}}}}", SearchQueryHash);
-
-      return string.Format(
-        "{0}?operationName=getSearchResults&variables={1}&extensions={2}",
-        SearchUrl,
-        Uri.EscapeDataString(variables),
-        Uri.EscapeDataString(extensions));
+        var locale = StoreLocaleOptions.GetValidOrDefault(storeLocale).Split('-');
+        var language = locale[0] == "zh" && locale.Length > 2 && locale[1] == "hant" ? "ch" : locale[0];
+        var variables = JsonSerializer.Serialize(new { countryCode = locale[^1].ToUpperInvariant(), languageCode = language.ToLowerInvariant(), nextCursor = "", pageOffset = 0, pageSize = 24, searchTerm });
+        const string queryHash = "4df6284f982e57bec70f23c77e2c219dc792eb19af7fb3d3a81767aa3f1958aa";
+        var extensions = $"{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{queryHash}\"}}}}";
+        return $"https://web.np.playstation.com/api/graphql/v1//op?operationName=getSearchResults&variables={Uri.EscapeDataString(variables)}&extensions={Uri.EscapeDataString(extensions)}";
     }
 
-    private static void ConfigureStoreRequest(WebClient webClient, string storeLocale)
+    internal static StoreSearchResult? GetMatchingGame(string gameName, IEnumerable<StoreSearchResult> results, IEnumerable<string>? gamePlatforms = null)
     {
-      webClient.Headers[HttpRequestHeader.Accept] = "application/json";
-      webClient.Headers[HttpRequestHeader.ContentType] = "application/json";
-      webClient.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
-      webClient.Headers["Origin"] = "https://store.playstation.com";
-      webClient.Headers["Referer"] = "https://store.playstation.com/";
-      webClient.Headers["apollographql-client-name"] = StoreApplicationName;
-      webClient.Headers["apollographql-client-version"] = StoreApplicationVersion;
-      webClient.Headers["X-PSN-App-Ver"] = string.Format("{0}/{1}-", StoreApplicationName, StoreApplicationVersion);
-      webClient.Headers["X-PSN-Correlation-ID"] = Guid.NewGuid().ToString();
-      webClient.Headers["X-PSN-Request-ID"] = Guid.NewGuid().ToString();
-      webClient.Headers["X-PSN-Store-Locale-Override"] = ToStoreLocaleHeader(storeLocale);
-    }
-
-    private static string ToStoreLocaleHeader(string storeLocale)
-    {
-      var locale = StoreLocaleOptions.GetValidOrDefault(storeLocale).Split('-');
-      for (var index = 0; index < locale.Length; index++)
-      {
-        locale[index] = index == locale.Length - 1
-          ? locale[index].ToUpperInvariant()
-          : locale[index].ToLowerInvariant();
-      }
-
-      return string.Join("-", locale);
-    }
-
-    internal static List<StoreSearchResult> ParseSearchResults(string response)
-    {
-      return ParseSearchResults(response, DefaultStoreLocale, out _);
-    }
-
-    internal static List<StoreSearchResult> ParseSearchResults(string response, out string searchError)
-    {
-      return ParseSearchResults(response, DefaultStoreLocale, out searchError);
-    }
-
-    internal static List<StoreSearchResult> ParseSearchResults(string response, string storeLocale, out string searchError)
-    {
-      searchError = null;
-      using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(response)))
-      {
-        var serializer = new DataContractJsonSerializer(typeof(PlayStationSearchResponse));
-        var searchResponse = serializer.ReadObject(stream) as PlayStationSearchResponse;
-        searchError = GetSearchError(searchResponse);
-        var searchResults = searchResponse?.Data?.UniversalSearch?.Results ?? new List<PlayStationSearchItem>();
-        var results = new List<StoreSearchResult>();
-
-        foreach (var result in searchResults)
+        var scored = ScoreResults(gameName, results, gamePlatforms);
+        if (scored.Count == 0)
         {
-          var coverUrl = GetMediaUrl(result.Media, "MASTER", "PORTRAIT_BANNER", "EDITION_KEY_ART", "GAMEHUB_COVER_ART") ?? GetAnyImageUrl(result.Media);
-          if (string.IsNullOrEmpty(result.Name) || string.IsNullOrEmpty(coverUrl) || string.IsNullOrEmpty(result.Id))
-          {
-            continue;
-          }
-
-          var descriptionParts = new List<string>();
-          if (!string.IsNullOrEmpty(result.LocalizedStoreDisplayClassification))
-          {
-            descriptionParts.Add(result.LocalizedStoreDisplayClassification);
-          }
-
-          if (result.Platforms != null && result.Platforms.Count > 0)
-          {
-            descriptionParts.Add(string.Join(", ", result.Platforms));
-          }
-
-          var route = string.Equals(result.Type, "Concept", StringComparison.OrdinalIgnoreCase) ? "concept" : "product";
-          results.Add(new StoreSearchResult
-          {
-            Name = result.Name,
-            Description = string.Join(" · ", descriptionParts),
-            CoverUrl = coverUrl,
-            BackgroundUrl = GetMediaUrl(result.Media, "BACKGROUND", "SIXTEEN_BY_NINE_BANNER"),
-            StoreDisplayClassification = result.StoreDisplayClassification,
-            Platforms = result.Platforms,
-            GameUrl = string.Format(
-              "https://store.playstation.com/{0}/{1}/{2}",
-              StoreLocaleOptions.GetValidOrDefault(storeLocale),
-              route,
-              result.Id)
-          });
+            logger.Debug($"No PlayStation Store candidate scored above zero for '{gameName}'.");
+            return null;
         }
 
-        return results;
-      }
-    }
-
-    private static string GetSearchError(PlayStationSearchResponse searchResponse)
-    {
-      if (searchResponse?.Errors?.Count > 0)
-      {
-        return string.Join("; ", searchResponse.Errors
-          .Where(error => !string.IsNullOrEmpty(error.Message))
-          .Select(error => error.Message));
-      }
-
-      if (searchResponse?.Data?.UniversalSearch == null)
-      {
-        return "The response did not contain universal search data. The Store API may have changed.";
-      }
-
-      return null;
-    }
-
-    private static string GetMediaUrl(List<PlayStationStoreMedia> media, params string[] roles)
-    {
-      if (media == null)
-      {
-        return null;
-      }
-
-      foreach (var role in roles)
-      {
-        var item = media.FirstOrDefault(a =>
-          string.Equals(a.Type, "IMAGE", StringComparison.OrdinalIgnoreCase) &&
-          string.Equals(a.Role, role, StringComparison.OrdinalIgnoreCase) &&
-          !string.IsNullOrEmpty(a.Url));
-        if (item != null)
+        if (scored.Count > 1 && scored[0].Score < 600 && scored[0].Score - scored[1].Score < 25)
         {
-          return item.Url;
+            logger.Debug(
+                $"Ambiguous PlayStation Store match for '{gameName}': " +
+                $"'{scored[0].Result.Name}' ({scored[0].Score}) vs '{scored[1].Result.Name}' ({scored[1].Score}). Skipping.");
+            return null;
         }
-      }
 
-      return null;
+        logger.Debug($"Matched '{gameName}' to PlayStation Store '{scored[0].Result.Name}' with score {scored[0].Score}.");
+        return scored[0].Result;
     }
 
-    private static string GetAnyImageUrl(List<PlayStationStoreMedia> media)
+    /// <summary>Orders results best-match first, keeping unscored ones after the scored ones.</summary>
+    internal static List<StoreSearchResult> SortByMatch(string gameName, IEnumerable<StoreSearchResult> results, IEnumerable<string>? gamePlatforms = null) =>
+        results
+            .Select(result => (Result: result, Score: GetMatchScore(gameName, result, gamePlatforms)))
+            // OrderByDescending is stable, so equally scored results keep the Store's own relevance
+            // order. That matters most for a partial search term, where nothing scores at all.
+            .OrderByDescending(item => item.Score)
+            .Select(item => item.Result)
+            .ToList();
+
+    private static List<(StoreSearchResult Result, int Score)> ScoreResults(string gameName, IEnumerable<StoreSearchResult> results, IEnumerable<string>? gamePlatforms) =>
+        results
+            .Select(result => (Result: result, Score: GetMatchScore(gameName, result, gamePlatforms)))
+            .Where(item => item.Score > 0)
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Result.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>
+    /// Rewards a candidate that is sold for a platform the game is tagged with, and penalises one
+    /// that is not. Without this a PlayStation 3 game can match a PlayStation 5 only product.
+    /// </summary>
+    private static int GetPlatformScore(IEnumerable<string>? gamePlatforms, List<string> resultPlatforms)
     {
-      return media?.FirstOrDefault(a =>
-        string.Equals(a.Type, "IMAGE", StringComparison.OrdinalIgnoreCase) &&
-        !string.IsNullOrEmpty(a.Url))?.Url;
+        var requested = gamePlatforms?
+            .Select(GetPlayStationPlatform)
+            .Where(platform => !string.IsNullOrEmpty(platform))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (requested is not { Count: > 0 } || resultPlatforms.Count == 0)
+        {
+            return 0;
+        }
+
+        return resultPlatforms.Any(platform => requested.Contains(platform, StringComparer.OrdinalIgnoreCase)) ? 60 : -40;
     }
 
-    private void SetSelectedGame(StoreSearchResult selectedGame)
+    private static string? GetPlayStationPlatform(string? platformName)
     {
-      if (selectedGame == null)
-      {
-        gameUrl = string.Empty;
-        return;
-      }
+        if (string.IsNullOrEmpty(platformName))
+        {
+            return null;
+        }
 
-      gamePageSource = null;
-      gamePage = null;
-      storePageMetadata = null;
+        return platformName switch
+        {
+            _ when Contains(platformName, "PlayStation 5") || Equals(platformName, "PS5") => "PS5",
+            _ when Contains(platformName, "PlayStation 4") || Equals(platformName, "PS4") => "PS4",
+            _ when Contains(platformName, "PlayStation VR") || Equals(platformName, "PS VR") => "PS VR",
+            _ when Contains(platformName, "PlayStation 3") || Equals(platformName, "PS3") => "PS3",
+            _ when Contains(platformName, "PlayStation Vita") || Equals(platformName, "PS Vita") => "PS Vita",
+            _ when Contains(platformName, "PlayStation Portable") || Equals(platformName, "PSP") => "PSP",
+            _ => null
+        };
 
-      cover = new MetadataFile(selectedGame.CoverUrl);
-      if (!string.IsNullOrEmpty(selectedGame.BackgroundUrl))
-      {
-        background = new MetadataFile(selectedGame.BackgroundUrl);
-      }
-
-      gameUrl = selectedGame.GameUrl;
+        static bool Contains(string value, string part) => value.Contains(part, StringComparison.OrdinalIgnoreCase);
+        static bool Equals(string value, string other) => string.Equals(value, other, StringComparison.OrdinalIgnoreCase);
     }
 
-    internal StoreSearchResult MatchFun(string matchName, List<StoreSearchResult> list)
+    private static int GetMatchScore(string gameName, StoreSearchResult result, IEnumerable<string>? gamePlatforms = null)
     {
-      var res = list.FirstOrDefault(a => string.Equals(matchName, a.Name, StringComparison.InvariantCultureIgnoreCase));
-      if (res != null)
-      {
-        return res;
-      }
+        if (result is null) return 0;
+        var requested = GetComparisonTitle(gameName);
+        var candidate = GetComparisonTitle(result.Name);
+        if (string.IsNullOrWhiteSpace(requested) || string.IsNullOrWhiteSpace(candidate)) return 0;
+        var requestedQualifiers = GetEditionQualifiers(requested);
+        var candidateQualifiers = GetEditionQualifiers(candidate);
+        var exact = string.Equals(requested, candidate, StringComparison.OrdinalIgnoreCase);
+        var baseMatch = string.Equals(RemoveEditionQualifiers(requested), RemoveEditionQualifiers(candidate), StringComparison.OrdinalIgnoreCase);
+        if (!exact && !baseMatch) return 0;
 
-      return null;
-    }
-
-    public StoreSearchResult GetMatchingGame(string gameName, List<StoreSearchResult> results)
-    {
-      var scoredResults = GetScoredSearchResults(gameName, results)
-        .Where(result => result.Score > 0)
-        .ToList();
-
-      if (scoredResults.Count == 0)
-      {
-        return null;
-      }
-
-      var bestResult = scoredResults[0];
-      var runnerUp = scoredResults.Skip(1).FirstOrDefault();
-      if (runnerUp != null &&
-          bestResult.Score < WeakMatchScore &&
-          bestResult.Score - runnerUp.Score < AmbiguousMatchScoreDifference)
-      {
-        logger.Debug(string.Format(
-          "Skipping ambiguous PSN Store match for {0}: {1} ({2}) vs {3} ({4}).",
-          gameName,
-          bestResult.Result.Name,
-          bestResult.Score,
-          runnerUp.Result.Name,
-          runnerUp.Score));
-        return null;
-      }
-
-      logger.Debug(string.Format(
-        "Selected PSN Store match for {0}: {1} ({2}).",
-        gameName,
-        bestResult.Result.Name,
-        bestResult.Score));
-      return bestResult.Result;
-    }
-
-    private List<ScoredSearchResult> GetScoredSearchResults(string gameName, IEnumerable<StoreSearchResult> results)
-    {
-      return results
-        .Select(result => new ScoredSearchResult(result, GetMatchScore(gameName, result)))
-        .OrderByDescending(result => result.Score)
-        .ThenBy(result => result.Result.Name, StringComparer.InvariantCultureIgnoreCase)
-        .ToList();
-    }
-
-    internal int GetMatchScore(string gameName, StoreSearchResult result)
-    {
-      if (result == null || string.IsNullOrEmpty(result.Name))
-      {
-        return 0;
-      }
-
-      var requestedTitle = GetComparisonTitle(gameName);
-      var candidateTitle = GetComparisonTitle(result.Name);
-      if (string.IsNullOrEmpty(requestedTitle) || string.IsNullOrEmpty(candidateTitle))
-      {
-        return 0;
-      }
-
-      var requestedQualifiers = GetEditionQualifiers(requestedTitle);
-      var candidateQualifiers = GetEditionQualifiers(candidateTitle);
-      var exactTitleMatch = string.Equals(requestedTitle, candidateTitle, StringComparison.InvariantCultureIgnoreCase);
-      var baseTitleMatch = string.Equals(
-        RemoveEditionQualifiers(requestedTitle),
-        RemoveEditionQualifiers(candidateTitle),
-        StringComparison.InvariantCultureIgnoreCase);
-
-      if (!exactTitleMatch && !baseTitleMatch)
-      {
-        return 0;
-      }
-
-      var score = exactTitleMatch ? 1000 : 700;
-      var missingRequestedQualifiers = requestedQualifiers.Except(candidateQualifiers).Count();
-      var extraCandidateQualifiers = candidateQualifiers.Except(requestedQualifiers).Count();
-      if (requestedQualifiers.Count > 0 && missingRequestedQualifiers == 0)
-      {
-        score += 200;
-      }
-
-      if (missingRequestedQualifiers > 0)
-      {
+        var score = exact ? 1000 : 700;
+        var missingRequestedQualifiers = requestedQualifiers.Except(candidateQualifiers).Count();
+        score += requestedQualifiers.Count > 0 && missingRequestedQualifiers == 0 ? 200 : 0;
         score -= 130 * missingRequestedQualifiers;
-      }
-
-      if (extraCandidateQualifiers > 0)
-      {
-        score -= 200 * extraCandidateQualifiers;
-      }
-
-      score += GetClassificationScore(result.StoreDisplayClassification, requestedQualifiers.Count > 0);
-      score += GetPlatformScore(result.Platforms);
-      return score;
+        score -= 200 * candidateQualifiers.Except(requestedQualifiers).Count();
+        score += GetPlatformScore(gamePlatforms, result.Platforms);
+        score += result.StoreDisplayClassification switch { "FULL_GAME" => 120, "GAME_BUNDLE" => -120, "PREMIUM_EDITION" => requestedQualifiers.Count > 0 ? 40 : -160, "ADD_ON" or "ADD_ON_PACK" or "CHARACTER" or "COSTUME" or "GAME_LEVEL" or "ITEM" or "VIRTUAL_CURRENCY" or "DEMO" => -500, _ => 0 };
+        return score;
     }
 
-    private static string GetComparisonTitle(string title)
+    private static string GetComparisonTitle(string? title)
     {
-      var normalizedTitle = StringExtensions.NormalizeGameName(title)
-        .Replace("&", " and ")
-        .Replace("'", string.Empty)
-        .ToLowerInvariant();
-      normalizedTitle = RemoveTrailingStorePlatformLabels(normalizedTitle);
-      normalizedTitle = Regex.Replace(normalizedTitle, @"\b([1-9]|[12]\d|30)\b", ReplaceSmallNumbersForRomans);
-      normalizedTitle = Regex.Replace(normalizedTitle, @"[^a-z0-9]+", " ");
-      normalizedTitle = Regex.Replace(normalizedTitle, @"\s+", " ").Trim();
-      return Regex.Replace(normalizedTitle, @"^the\s+", string.Empty);
+        var value = NormalizeGameName(title).Replace("&", " and ").Replace("'", string.Empty).ToLowerInvariant();
+        value = Regex.Replace(value, @"(?:\s*(?:and|&|,|/|-)?\s*(?:ps\s*[345]|playstation\s*[345]|ps\s*vr(?:\s*2)?|playstation\s*vr(?:\s*2)?))+\s*$", "", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"\b([1-9]|[12]\d|30)\b", match => ToRoman(int.Parse(match.Value)).ToLowerInvariant());
+        value = Regex.Replace(value, @"[^a-z0-9]+", " ");
+        return Regex.Replace(Regex.Replace(value, @"\s+", " ").Trim(), @"^the\s+", string.Empty);
     }
 
-    private static string RemoveTrailingStorePlatformLabels(string title)
-    {
-      const string platformLabel = @"(?:ps\s*[345]|playstation\s*[345]|ps\s*vr(?:\s*2)?|playstation\s*vr(?:\s*2)?)";
-      return Regex.Replace(
-        title,
-        @"(?:\s*(?:and|&|,|/|-)?\s*" + platformLabel + @")+\s*$",
-        string.Empty,
-        RegexOptions.IgnoreCase).Trim();
-    }
-
-    private static string ReplaceSmallNumbersForRomans(Match match)
-    {
-      return Roman.To(int.Parse(match.Value)).ToLowerInvariant();
-    }
-
-    private static HashSet<string> GetEditionQualifiers(string title)
-    {
-      var qualifiers = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-      foreach (var qualifier in EditionQualifierAliases)
-      {
-        if (Regex.IsMatch(title, @"\b" + Regex.Escape(qualifier.Key) + @"\b", RegexOptions.IgnoreCase))
-        {
-          qualifiers.Add(qualifier.Value);
-        }
-      }
-
-      return qualifiers;
-    }
+    /// <summary>
+    /// Collects the edition qualifiers in a title as canonical tokens, so that "remastered" and
+    /// "remaster", or "deluxe edition" and "deluxe", count as the same qualifier rather than as two
+    /// different ones that penalise each other.
+    /// </summary>
+    private static HashSet<string> GetEditionQualifiers(string title) =>
+        EditionQualifierAliases
+            .Where(alias => Regex.IsMatch(title, @"\b" + Regex.Escape(alias.Key) + @"\b", RegexOptions.IgnoreCase))
+            .Select(alias => alias.Value)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     private static string RemoveEditionQualifiers(string title)
     {
-      var baseTitle = title;
-      foreach (var qualifier in EditionQualifierAliases.Keys)
-      {
-        baseTitle = Regex.Replace(baseTitle, @"\b" + Regex.Escape(qualifier) + @"\b", " ", RegexOptions.IgnoreCase);
-      }
-
-      baseTitle = Regex.Replace(baseTitle, @"\bedition\b", " ", RegexOptions.IgnoreCase);
-      return Regex.Replace(baseTitle, @"\s+", " ").Trim();
+        foreach (var qualifier in EditionQualifiers) title = Regex.Replace(title, @"\b" + Regex.Escape(qualifier) + @"\b", " ", RegexOptions.IgnoreCase);
+        return Regex.Replace(Regex.Replace(title, @"\bedition\b", " ", RegexOptions.IgnoreCase), @"\s+", " ").Trim();
     }
 
-    private static int GetClassificationScore(string classification, bool requestedEdition)
+    /// <summary>
+    /// Surface form to canonical token. Longer forms come first so that "deluxe edition" is matched
+    /// and removed before the bare "deluxe" it contains.
+    /// </summary>
+    private static readonly Dictionary<string, string> EditionQualifierAliases = new(StringComparer.OrdinalIgnoreCase)
     {
-      switch (classification)
-      {
-        case "FULL_GAME":
-          return 120;
-        case "GAME_BUNDLE":
-          return -120;
-        case "PREMIUM_EDITION":
-          return requestedEdition ? 40 : -160;
-        case "ADD_ON":
-        case "ADD_ON_PACK":
-        case "CHARACTER":
-        case "COSTUME":
-        case "GAME_LEVEL":
-        case "ITEM":
-        case "VIRTUAL_CURRENCY":
-        case "DEMO":
-          return -500;
-        default:
-          return 0;
-      }
+        ["directors cut"] = "directors cut",
+        ["game of the year"] = "game of the year",
+        ["digital deluxe"] = "digital deluxe",
+        ["deluxe edition"] = "deluxe",
+        ["complete edition"] = "complete",
+        ["definitive edition"] = "definitive",
+        ["ultimate edition"] = "ultimate",
+        ["special edition"] = "special edition",
+        ["anniversary edition"] = "anniversary edition",
+        ["premium edition"] = "premium",
+        ["enhanced edition"] = "enhanced",
+        ["gold edition"] = "gold edition",
+        ["platinum edition"] = "platinum edition",
+        ["collectors edition"] = "collectors edition",
+        ["standard edition"] = "standard",
+        ["remastered"] = "remaster",
+        ["remaster"] = "remaster",
+        ["remake"] = "remake",
+        ["enhanced"] = "enhanced",
+        ["definitive"] = "definitive",
+        ["complete"] = "complete",
+        ["deluxe"] = "deluxe",
+        ["ultimate"] = "ultimate",
+        ["premium"] = "premium"
+    };
+
+    private static readonly string[] EditionQualifiers = [.. EditionQualifierAliases.Keys];
+    private static readonly (int Value, string Name)[] RomanNumerals = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")];
+
+    private static string ToRoman(int value)
+    {
+        var result = new System.Text.StringBuilder();
+        foreach (var (number, roman) in RomanNumerals) while (value >= number) { result.Append(roman); value -= number; }
+        return result.ToString();
     }
 
-    private int GetPlatformScore(List<string> resultPlatforms)
+    internal static void ConfigureStoreRequest(HttpRequestHeaders headers, string storeLocale)
     {
-      var gamePlatforms = options?.GameData?.Platforms?
-        .Select(platform => GetPlayStationPlatform(platform.Name))
-        .Where(platform => !string.IsNullOrEmpty(platform))
-        .Distinct(StringComparer.InvariantCultureIgnoreCase)
-        .ToList();
-      if (gamePlatforms == null || gamePlatforms.Count == 0 || resultPlatforms == null || resultPlatforms.Count == 0)
-      {
-        return 0;
-      }
-
-      return resultPlatforms.Any(platform => gamePlatforms.Contains(platform, StringComparer.InvariantCultureIgnoreCase)) ? 60 : -40;
+        headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36");
+        headers.Referrer = new Uri("https://store.playstation.com/");
+        headers.Add("Origin", "https://store.playstation.com");
+        // Apollo rejects a request as potential CSRF unless it carries either a non-simple
+        // content-type or one of these headers. A GET has no content, so the header is the honest
+        // way to satisfy it; removing it makes every search fail with CSRF_ERROR.
+        headers.Add("x-apollo-operation-name", "getSearchResults");
+        headers.Add("apollographql-client-name", "@sie-ppr-web-store/app");
+        headers.Add("apollographql-client-version", "0.113.0");
+        headers.Add("X-PSN-App-Ver", "@sie-ppr-web-store/app/0.113.0-");
+        headers.Add("X-PSN-Correlation-ID", Guid.NewGuid().ToString());
+        headers.Add("X-PSN-Request-ID", Guid.NewGuid().ToString());
+        headers.Add("X-PSN-Store-Locale-Override", ToStoreLocaleHeader(storeLocale));
     }
 
-    private static string GetPlayStationPlatform(string platformName)
+    private static string ToStoreLocaleHeader(string locale)
     {
-      if (string.IsNullOrEmpty(platformName))
-      {
+        var parts = StoreLocaleOptions.GetValidOrDefault(locale).Split('-');
+        return string.Join("-", parts.Select((part, index) => index == parts.Length - 1 ? part.ToUpperInvariant() : part.ToLowerInvariant()));
+    }
+
+    internal static string NormalizeGameName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
+        var normalized = Regex.Replace(name, "[™©®]", "").Replace("_", " ").Replace(".", " ").Replace('’', '\'');
+        var withoutBrackets = Regex.Replace(normalized, @"\[.*?\]", "");
+        normalized = string.IsNullOrWhiteSpace(withoutBrackets) ? normalized : withoutBrackets;
+        var withoutParentheses = Regex.Replace(normalized, @"\(.*?\)", "");
+        normalized = string.IsNullOrWhiteSpace(withoutParentheses) ? normalized : withoutParentheses;
+        normalized = Regex.Replace(normalized, @"\s*:\s*", ": ");
+        normalized = Regex.Replace(normalized, @"\s+", " ").Trim();
+        return Regex.IsMatch(normalized, @",\s*The$", RegexOptions.IgnoreCase) ? "The " + Regex.Replace(normalized, @",\s*The$", "", RegexOptions.IgnoreCase) : normalized;
+    }
+
+    private static string? GetJsonString(JsonElement element, string name) => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    private static string? GetMediaUrl(JsonElement result, params string[] roles)
+    {
+        if (!result.TryGetProperty("media", out var media) || media.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        // The roles are a preference order. Scanning the media array once and accepting any matching
+        // role would take whichever happens to come first, and MASTER is always last.
+        foreach (var role in roles)
+        {
+            foreach (var item in media.EnumerateArray())
+            {
+                if (string.Equals(GetJsonString(item, "type"), "IMAGE", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(GetJsonString(item, "role"), role, StringComparison.OrdinalIgnoreCase))
+                {
+                    var url = GetJsonString(item, "url");
+                    if (!string.IsNullOrWhiteSpace(url))
+                    {
+                        return url;
+                    }
+                }
+            }
+        }
+
         return null;
-      }
-
-      if (platformName.IndexOf("PlayStation 5", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
-          string.Equals(platformName, "PS5", StringComparison.InvariantCultureIgnoreCase))
-      {
-        return "PS5";
-      }
-
-      if (platformName.IndexOf("PlayStation 4", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
-          string.Equals(platformName, "PS4", StringComparison.InvariantCultureIgnoreCase))
-      {
-        return "PS4";
-      }
-
-      if (platformName.IndexOf("PlayStation VR", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
-          string.Equals(platformName, "PS VR", StringComparison.InvariantCultureIgnoreCase))
-      {
-        return "PS VR";
-      }
-
-      if (platformName.IndexOf("PlayStation 3", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
-          string.Equals(platformName, "PS3", StringComparison.InvariantCultureIgnoreCase))
-      {
-        return "PS3";
-      }
-
-      if (platformName.IndexOf("PlayStation Vita", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
-          string.Equals(platformName, "PS Vita", StringComparison.InvariantCultureIgnoreCase))
-      {
-        return "PS Vita";
-      }
-
-      if (platformName.IndexOf("PlayStation Portable", StringComparison.InvariantCultureIgnoreCase) >= 0 ||
-          string.Equals(platformName, "PSP", StringComparison.InvariantCultureIgnoreCase))
-      {
-        return "PSP";
-      }
-
-      return null;
     }
-
-    private class ScoredSearchResult
+    private static string? GetAnyImageUrl(JsonElement result) =>
+        result.TryGetProperty("media", out var media) && media.ValueKind == JsonValueKind.Array
+            ? media.EnumerateArray()
+                .Where(item => string.Equals(GetJsonString(item, "type"), "IMAGE", StringComparison.OrdinalIgnoreCase))
+                .Select(item => GetJsonString(item, "url"))
+                .FirstOrDefault(url => !string.IsNullOrWhiteSpace(url))
+            : null;
+    private static string? GetPropertyOrNull(JsonElement element, string name) => element.ValueKind != JsonValueKind.Undefined ? GetJsonString(element, name) : null;
+    private static string? GetDescription(IHtmlDocument page) => page.QuerySelector("[data-qa='mfe-game-overview#description']")?.InnerHtml ?? page.QuerySelector("p.psw-c-bg-card-1")?.InnerHtml ?? page.QuerySelector("meta[name='description']")?.GetAttribute("content");
+    private static string? GetText(IHtmlDocument page, params string[] selectors) => selectors.Select(selector => page.QuerySelector(selector)?.TextContent?.Trim()).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+    private static string? GetImageUrl(IHtmlDocument page, params string[] selectors) => selectors.Select(selector => page.QuerySelector(selector)?.GetAttribute("src")?.Split('?')[0]).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+    private static PartialDate? GetReleaseDate(string source, IHtmlDocument page)
     {
-      public StoreSearchResult Result { get; }
-      public int Score { get; }
-
-      public ScoredSearchResult(StoreSearchResult result, int score)
-      {
-        Result = result;
-        Score = score;
-      }
+        var match = Regex.Match(source, "\\\"releaseDate\\\"\\s*:\\s*\\\"(?<date>\\d{4}-\\d{2}-\\d{2})");
+        if (match.Success && PartialDate.TryParse(match.Groups["date"].Value, out var date)) return date;
+        return PartialDate.TryParse(GetText(page, "[data-qa='gameInfo#releaseInformation#releaseDate-value']"), out date) ? date : null;
     }
-  }
+    private static int? GetCommunityScore(IHtmlDocument page) => double.TryParse(GetText(page, "[data-qa='mfe-game-title#average-rating']"), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var rating) && rating is >= 0 and <= 5 ? (int)Math.Round(rating * 20, MidpointRounding.AwayFromZero) : null;
+}
 
-  [DataContract]
-  internal class PlayStationSearchResponse
-  {
-    [DataMember(Name = "data")]
-    public PlayStationSearchData Data { get; set; }
+internal sealed class StoreSearchResult : ChooseDialogItem
+{
+    public StoreSearchResult(string name, string? description) : base(name, description) { }
+    public string? CoverUrl { get; init; }
+    public string? BackgroundUrl { get; init; }
+    public string? StoreDisplayClassification { get; init; }
+    public List<string> Platforms { get; init; } = [];
+    public string? StoreId { get; init; }
+    public string? GameUrl { get; init; }
+}
 
-    [DataMember(Name = "errors")]
-    public List<PlayStationSearchError> Errors { get; set; }
-  }
-
-  [DataContract]
-  internal class PlayStationSearchError
-  {
-    [DataMember(Name = "message")]
-    public string Message { get; set; }
-  }
-
-  [DataContract]
-  internal class PlayStationSearchData
-  {
-    [DataMember(Name = "universalSearch")]
-    public PlayStationSearchDataPage UniversalSearch { get; set; }
-  }
-
-  [DataContract]
-  internal class PlayStationSearchDataPage
-  {
-    [DataMember(Name = "results")]
-    public List<PlayStationSearchItem> Results { get; set; }
-  }
-
-  [DataContract]
-  internal class PlayStationSearchItem
-  {
-    [DataMember(Name = "__typename")]
-    public string Type { get; set; }
-
-    [DataMember(Name = "id")]
-    public string Id { get; set; }
-
-    [DataMember(Name = "name")]
-    public string Name { get; set; }
-
-    [DataMember(Name = "localizedStoreDisplayClassification")]
-    public string LocalizedStoreDisplayClassification { get; set; }
-
-    [DataMember(Name = "storeDisplayClassification")]
-    public string StoreDisplayClassification { get; set; }
-
-    [DataMember(Name = "platforms")]
-    public List<string> Platforms { get; set; }
-
-    [DataMember(Name = "media")]
-    public List<PlayStationStoreMedia> Media { get; set; }
-  }
-
-  [DataContract]
-  internal class PlayStationStoreMedia
-  {
-    [DataMember(Name = "role")]
-    public string Role { get; set; }
-
-    [DataMember(Name = "type")]
-    public string Type { get; set; }
-
-    [DataMember(Name = "url")]
-    public string Url { get; set; }
-  }
-
-
+internal sealed class StorePageMetadata
+{
+    public string? Description { get; init; }
+    public string? BackgroundImageUrl { get; init; }
+    public List<string> Genres { get; init; } = [];
+    public string? Publisher { get; init; }
+    public PartialDate? ReleaseDate { get; init; }
+    public int? CommunityScore { get; init; }
 }

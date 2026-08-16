@@ -278,3 +278,5 @@ source/PlayniteServices/twitchTokens.json
 # Not redistributable
 XBOXONE.ttf
 PlayStation4.ttf
+# Local debug profile with machine-specific paths
+Properties/launchSettings.json
