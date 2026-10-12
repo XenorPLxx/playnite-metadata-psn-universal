@@ -1,5 +1,9 @@
 # Fixture checks
 
+Run on Windows with the .NET 10 SDK. The plugin targets Playnite 11 Alpha2's SDK
+(`11.0.0-alpha14`). Checks explicitly initialize the settings handler and metadata
+session to catch logger API incompatibilities, then exercise the parser and matcher.
+
 `Fixtures/search-results-wukong.json` is a compact, anonymized PlayStation Store
 GraphQL search response. It covers full-game versus deluxe-edition selection plus
 cover/background media extraction.

@@ -19,7 +19,7 @@ public partial class UniversalPSNMetadataSettingsHandler : PluginSettingsHandler
 {
     private const string SettingsErrorNotification = "psnstore_settings_error";
 
-    private static readonly ILogger logger = LogManager.GetLogger();
+    private static readonly ILogger logger = LogManager.GetLogger<UniversalPSNMetadataSettingsHandler>();
     private readonly UniversalPSNMetadataPlugin plugin;
 
     [ObservableProperty] private UniversalPSNMetadataSettings settings = new();

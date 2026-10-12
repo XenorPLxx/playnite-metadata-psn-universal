@@ -31,7 +31,7 @@ public sealed class UniversalPSNMetadataProvider : MetadataProvider
 
 internal sealed class UniversalPSNMetadataGameSession : MetadataProviderGameSession
 {
-    private static readonly ILogger logger = LogManager.GetLogger();
+    private static readonly ILogger logger = LogManager.GetLogger<UniversalPSNMetadataGameSession>();
     private static readonly HttpClient httpClient = new();
     private static readonly TimeSpan requestTimeout = TimeSpan.FromSeconds(30);
 

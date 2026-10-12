@@ -2,6 +2,8 @@
 
 Download game metadata and square cover artwork from the PlayStation Store, without requiring a PlayStation account.
 
+Requires Playnite 11 Alpha2 (11.0.11.0) or newer.
+
 ## Features
 
 - Searches the PlayStation Store and imports descriptions, cover, icon, and background artwork, genres, publishers, release dates, community scores, and Store links.

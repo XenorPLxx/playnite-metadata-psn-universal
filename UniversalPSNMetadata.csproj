@@ -10,7 +10,7 @@
   <ItemGroup>
     <PackageReference Include="AngleSharp" Version="1.7.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="Playnite.SDK" Version="11.0.0-alpha13" />
+    <PackageReference Include="Playnite.SDK" Version="11.0.0-alpha14" />
   </ItemGroup>
 
   <ItemGroup>

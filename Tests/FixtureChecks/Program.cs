@@ -1,6 +1,12 @@
 using System.Text;
 using System.IO;
+using System.Runtime.CompilerServices;
 using UniversalPSNMetadata;
+
+// Force both logger-owning types to initialize so SDK logger incompatibilities fail here,
+// including the settings handler, which the parser/matcher checks otherwise never exercise.
+RuntimeHelpers.RunClassConstructor(typeof(UniversalPSNMetadataSettingsHandler).TypeHandle);
+RuntimeHelpers.RunClassConstructor(typeof(UniversalPSNMetadataGameSession).TypeHandle);
 
 var fixtures = Path.Combine(AppContext.BaseDirectory, "Fixtures");
 string Fixture(string name) => File.ReadAllText(Path.Combine(fixtures, name));
